@@ -67,17 +67,21 @@ MAX_RETRIES=2
 for i in $(seq 1 ${MAX_RETRIES}); do
   log "--- Attempt ${i}/${MAX_RETRIES} to establish and verify LTE connection ---"
 
-  # 1) 모뎀 상태 초기화: 기존 베어러 모두 삭제
-  log "Resetting modem state by deleting all bearers..."
-  mapfile -t OLD_BEARERS < <($MM -m "$MODEM_PATH" --list-bearers 2>/dev/null | sed -n 's/.*\(\/org\/freedesktop\/ModemManager1\/Bearer\/[0-9]\+\).*/\1/p')
-  if [ ${#OLD_BEARERS[@]} -gt 0 ]; then
-    for b in "${OLD_BEARERS[@]}"; do
-      $MM -b "$b" --disconnect >/dev/null 2>&1 || true
-      $MM -m "$MODEM_PATH" --delete-bearer="$b" >/dev/null 2>&1 || true
-    done
-    log "Old bearers deleted."
+  # 1) 모뎀 소프트웨어 스택 리셋: disable -> enable
+  log "Resetting modem software stack..."
+  $MM -m "$MODEM_PATH" --disable >/dev/null 2>&1 || true
+  sleep 2
+  $MM -m "$MODEM_PATH" --enable >/dev/null 2>&1 || {
+    log "WARN: Failed to re-enable modem. Retrying...";
+    sleep 3;
+    continue;
+  }
+  # 모뎀이 완전히 준비될 때까지 대기 (최대 10초)
+  for _ in $(seq 1 10); do
+    [ "$($MM -m "$MODEM_PATH" -K | grep 'modem.generic.state' | awk -F= '{print $2}')" = "enabled" ] && break
     sleep 1
-  fi
+  done
+  log "Modem enabled and ready."
 
   # 2) 베어러 생성 및 연결
   log "Creating and connecting a new bearer..."
