@@ -36,6 +36,19 @@ MODEM_PATH="$($MM -L 2>/dev/null | sed -n 's/^[[:space:]]*\([/].*Modem\/[0-9]\+\
 [ -n "$MODEM_PATH" ] || { log "No modem found; skip LTE"; exit 0; }
 log "Modem: ${MODEM_PATH}"
 
+# 1a) 모뎀 상태 초기화: 기존 베어러 모두 삭제
+log "Resetting modem state by deleting all bearers..."
+mapfile -t OLD_BEARERS < <($MM -m "$MODEM_PATH" --list-bearers 2>/dev/null | sed -n 's/.*\(\/org\/freedesktop\/ModemManager1\/Bearer\/[0-9]\+\).*/\1/p')
+if [ ${#OLD_BEARERS[@]} -gt 0 ]; then
+  for b in "${OLD_BEARERS[@]}"; do
+    log "Deleting old bearer: $b"
+    # 베어러 연결을 먼저 끊고 삭제
+    $MM -b "$b" --disconnect >/dev/null 2>&1 || true
+    $MM -m "$MODEM_PATH" --delete-bearer="$b" >/dev/null 2>&1 || true
+  done
+  sleep 1 # Give it a moment to process deletions
+fi
+
 # 2) 미연결이면 simple-connect 시도(무해)
 if ! $MM -m "$MODEM_PATH" 2>/dev/null | grep -q 'state:.*connected'; then
   log "simple-connect APN=${APN}, ip-type=${IP_TYPE}"
