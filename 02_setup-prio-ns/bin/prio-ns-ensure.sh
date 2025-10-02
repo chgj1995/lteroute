@@ -39,14 +39,14 @@ log "Modem: ${MODEM_PATH}"
 # --- Helper Functions ---
 # Finds the first available bearer, regardless of state
 find_any_bearer() {
-  local mp="$1"
-  $MM -m "$mp" --list-bearers | sed -n 's/.*\(\/org\/freedesktop\/ModemManager1\/Bearer\/[0-9]\+\).*/\1/p' | head -n1
+  # 구버전 mmcli 호환성을 위해 grep 사용
+  $MM -m "$1" | grep -o '/org/freedesktop/ModemManager1/Bearer/[0-9]\+' | head -n1
 }
 
 # Finds a bearer that is already connected and has IPv4 config
 pick_data_bearer() {
-  local mp="$1" b
-  mapfile -t BEARERS < <($MM -m "$mp" --list-bearers 2>/dev/null | sed -n 's/.*\(\/org\/freedesktop\/ModemManager1\/Bearer\/[0-9]\+\).*/\1/p')
+  local mp="$1" b BEARERS
+  mapfile -t BEARERS < <($MM -m "$mp" 2>/dev/null | grep -o '/org/freedesktop/ModemManager1/Bearer/[0-9]\+')
   for b in "${BEARERS[@]}"; do
     $MM -b "$b" 2>/dev/null | grep -q 'connected:[[:space:]]*yes' || continue
     $MM -b "$b" -K 2>/dev/null | grep -q '^bearer.ipv4.method:' || continue
