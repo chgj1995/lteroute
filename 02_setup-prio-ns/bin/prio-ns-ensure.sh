@@ -38,12 +38,16 @@ log "Modem: ${MODEM_PATH}"
 
 # --- Helper Functions ---
 pick_data_bearer() {
-  local mp="$1" b BEARERS
+  local mp="$1" b BEARERS detail
   mapfile -t BEARERS < <($MM -m "$mp" 2>/dev/null | grep -o '/org/freedesktop/ModemManager1/Bearer/[0-9]\+')
   for b in "${BEARERS[@]}"; do
-    $MM -b "$b" 2>/dev/null | grep -q 'connected:[[:space:]]*yes' || continue
-    $MM -b "$b" -K 2>/dev/null | grep -q '^bearer.ipv4.method:' || continue
-    echo "$b"; return 0
+    detail="$($MM -b "$b" 2>/dev/null)"
+    # 1. 연결되어 있는지 확인
+    echo "$detail" | grep -q 'connected:[[:space:]]*yes' || continue
+    # 2. IPv4 설정 블록과 주소가 있는지 확인 (가장 확실한 방법)
+    if echo "$detail" | grep -q 'IPv4 configuration' && echo "$detail" | grep -q 'address:'; then
+      echo "$b"; return 0
+    fi
   done
   return 1
 }
