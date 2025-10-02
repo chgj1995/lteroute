@@ -37,6 +37,13 @@ MODEM_PATH="$($MM -L 2>/dev/null | sed -n 's/^[[:space:]]*\([/].*Modem\/[0-9]\+\
 log "Modem: ${MODEM_PATH}"
 
 # --- Helper Functions ---
+# Finds the first available bearer, regardless of state
+find_any_bearer() {
+  local mp="$1"
+  $MM -m "$mp" --list-bearers | sed -n 's/.*\(\/org\/freedesktop\/ModemManager1\/Bearer\/[0-9]\+\).*/\1/p' | head -n1
+}
+
+# Finds a bearer that is already connected and has IPv4 config
 pick_data_bearer() {
   local mp="$1" b
   mapfile -t BEARERS < <($MM -m "$mp" --list-bearers 2>/dev/null | sed -n 's/.*\(\/org\/freedesktop\/ModemManager1\/Bearer\/[0-9]\+\).*/\1/p')
@@ -67,43 +74,43 @@ MAX_RETRIES=2
 for i in $(seq 1 ${MAX_RETRIES}); do
   log "--- Attempt ${i}/${MAX_RETRIES} to establish and verify LTE connection ---"
 
-  # 1) 모뎀 소프트웨어 스택 리셋: disable -> enable
-  log "Resetting modem software stack..."
-  $MM -m "$MODEM_PATH" --disable >/dev/null 2>&1 || true
-  sleep 2
-  $MM -m "$MODEM_PATH" --enable >/dev/null 2>&1 || {
-    log "WARN: Failed to re-enable modem. Retrying...";
-    sleep 3;
-    continue;
-  }
-  # 모뎀이 완전히 준비될 때까지 대기 (최대 10초)
-  for _ in $(seq 1 10); do
-    [ "$($MM -m "$MODEM_PATH" -K | grep 'modem.generic.state' | awk -F= '{print $2}')" = "enabled" ] && break
-    sleep 1
-  done
-  log "Modem enabled and ready."
+  # 1) 베어러 재사용 또는 생성 (모든 리셋 로직 제거)
+  log "Searching for existing bearer to reuse..."
+  BEARER_PATH=$(find_any_bearer "$MODEM_PATH")
 
-  # 2) 베어러 생성 및 연결
-  log "Creating and connecting a new bearer..."
-  BEARER_PATH=""
-  NEW_BEARER=$($MM -m "$MODEM_PATH" --create-bearer="apn=${APN},ip-type=${IP_TYPE}" | sed -n 's/.*\(\/org\/freedesktop\/ModemManager1\/Bearer\/[0-9]\+\).*/\1/p' || true)
-  if [ -z "$NEW_BEARER" ]; then
-    log "WARN: Failed to create a new bearer. Retrying..."
+  if [ -n "$BEARER_PATH" ]; then
+    log "Found existing bearer: ${BEARER_PATH}."
+    if ! $MM -b "$BEARER_PATH" | grep -q 'state:[[:space:]]*connected'; then
+      log "Bearer is not connected. Attempting to connect..."
+      $MM -b "$BEARER_PATH" --connect >/dev/null 2>&1 || true
+      sleep 3
+    else
+      log "Bearer is already connected."
+    fi
+  else
+    log "No existing bearer found. Creating a new one..."
+    BEARER_PATH=$($MM -m "$MODEM_PATH" --create-bearer="apn=${APN},ip-type=${IP_TYPE}" | sed -n 's/.*\(\/org\/freedesktop\/ModemManager1\/Bearer\/[0-9]\+\).*/\1/p' || true)
+    if [ -z "$BEARER_PATH" ]; then
+      log "WARN: Failed to create a new bearer. Retrying..."
+      sleep 3
+      continue
+    fi
+    log "New bearer created: ${BEARER_PATH}. Connecting..."
+    $MM -b "$BEARER_PATH" --connect >/dev/null 2>&1 || true
     sleep 3
-    continue
   fi
-  $MM -b "$NEW_BEARER" --connect >/dev/null 2>&1 || true
-  sleep 3 # 연결 후 정보가 전파될 시간
-  BEARER_PATH="$(pick_data_bearer "$MODEM_PATH" || true)"
 
-  if [ -z "$BEARER_PATH" ]; then
-    log "WARN: Could not find a connected data bearer after creation. Retrying..."
-    sleep 3
-    continue
+  # 2) 최종적으로 사용 가능한 데이터 베어러 확인
+  FINAL_BEARER_PATH="$(pick_data_bearer "$MODEM_PATH" || true)"
+  if [ -z "$FINAL_BEARER_PATH" ]; then
+      log "WARN: Failed to get a usable (connected + IPv4) bearer. Retrying..."
+      sleep 3
+      continue
   fi
+  log "Using verified data bearer: ${FINAL_BEARER_PATH}"
 
   # 3) IPv4/IFACE 정보 파싱
-  eval "$( $MM -b "$BEARER_PATH" -K 2>/dev/null | awk -F= '
+  eval "$( $MM -b "$FINAL_BEARER_PATH" -K 2>/dev/null | awk -F= '
       $1=="bearer.interface"         { printf("IFACE=\"%s\"\n",$2) }
       $1=="bearer.ipv4.address"      { printf("ADDR=\"%s\"\n",$2) }
       $1=="bearer.ipv4.prefix"       { printf("PFX=\"%s\"\n",$2) }
@@ -113,7 +120,7 @@ for i in $(seq 1 ${MAX_RETRIES}); do
       $1=="bearer.ipv4.dns2"         { printf("DNS2=\"%s\"\n",$2) }
   ')"
   : "${IFACE:=wwan0}"
-  log "Bearer: ${BEARER_PATH} iface=${IFACE} ${ADDR}/${PFX} gw=${GW} dns=${DNS1},${DNS2}"
+  log "Bearer: ${FINAL_BEARER_PATH} iface=${IFACE} ${ADDR}/${PFX} gw=${GW} dns=${DNS1},${DNS2}"
 
   if [ -z "${ADDR:-}" ] || [ -z "${GW:-}" ] || [ -z "${DNS1:-}" ]; then
     log "WARN: Incomplete network info from bearer. Retrying..."
