@@ -37,6 +37,17 @@ MODEM_PATH="$($MM -L 2>/dev/null | sed -n 's/^[[:space:]]*\([/].*Modem\/[0-9]\+\
 log "Modem: ${MODEM_PATH}"
 
 # --- Helper Functions ---
+pick_data_bearer() {
+  local mp="$1" b BEARERS
+  mapfile -t BEARERS < <($MM -m "$mp" 2>/dev/null | grep -o '/org/freedesktop/ModemManager1/Bearer/[0-9]\+')
+  for b in "${BEARERS[@]}"; do
+    $MM -b "$b" 2>/dev/null | grep -q 'connected:[[:space:]]*yes' || continue
+    $MM -b "$b" -K 2>/dev/null | grep -q '^bearer.ipv4.method:' || continue
+    echo "$b"; return 0
+  done
+  return 1
+}
+
 verify_connection() {
   local iface="$1"
   log "Verifying connection on interface ${iface} in netns ${NS}..."
