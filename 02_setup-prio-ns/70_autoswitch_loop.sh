@@ -107,8 +107,8 @@ main_fail=0
 main_ok=0
 
 trap '
-  log watch "stop -> restore HOST default and NS default"
-  restore_host_default
+  log watch "stop -> restore NS default"
+  # restore_host_default
   ip netns exec "'"${NS}"'" ip route replace default via "'"${HOST_VETH_IP}"'" dev "'"${VETH_NS}"'" metric 10 || true
   exit 0
 ' INT TERM
@@ -132,12 +132,12 @@ while true; do
         ip netns exec "${NS}" ip route replace default via "${LTE_GW}" dev "${LTE_IF}" onlink metric 10 || true
         # NS default: MAIN은 대기 (metric 100)
         ip netns exec "${NS}" ip route replace default via "${HOST_VETH_IP}" dev "${VETH_NS}" metric 100 || true
-        # Host default -> veth-main (외부로 나가는 길을 ns로)
-        switch_host_default_to_ns
+        # Host default 변경은 비활성화
+        # switch_host_default_to_ns
         current="lte"
         main_fail=0
         main_ok=0
-        log watch "DEFAULT -> LTE (host+ns)"
+        log watch "NS DEFAULT -> LTE"
       else
         # 이 경고는 prio-ns-ensure.sh가 실패했음을 의미
         log watch "WARN: LTE GW not found. Cannot switch."
@@ -153,12 +153,12 @@ while true; do
       if [ -n "${LTE_GW}" ]; then
         ip netns exec "${NS}" ip route replace default via "${LTE_GW}" dev "${LTE_IF}" onlink metric 100 || true
       fi
-      # Host default 복구
-      restore_host_default
+      # Host default 복구 비활성화
+      # restore_host_default
       current="main"
       main_fail=0
       main_ok=0
-      log watch "DEFAULT -> MAIN (LTE standby)"
+      log watch "NS DEFAULT -> MAIN (LTE standby)"
     fi
   fi
 
