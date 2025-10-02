@@ -19,7 +19,8 @@ run_glob() {
   done
   [ "$matched" -eq 1 ] || echo "-- skip: ${step}_*.sh 없음"
 }
-for s in 10 20 30 40 50 60; do run_glob "$s"; done
+# 10(ns/veth 생성), 60(호스트 NAT)만 실행
+for s in 10 60; do run_glob "$s"; done
 
 # 2) ensure 스크립트 배포(실행권한/리눅스 개행 보장)
 install -D -m 0755 "$DIR/bin/prio-ns-ensure.sh" /usr/local/sbin/prio-ns-ensure.sh
