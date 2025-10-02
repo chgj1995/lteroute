@@ -87,77 +87,13 @@ get_lte_gw() {
     | head -n1
 }
 
-ensure_lte_connected() {
-  log watch "Ensuring LTE modem is connected..."
-  local MODEM_PATH
-  MODEM_PATH="$(mmcli -L | awk '/ModemManager1\/Modem/ {print $1; exit}' || true)"
-  if [ -z "${MODEM_PATH}" ]; then
-    log watch "WARN: No modem found by mmcli."
-    return 1
-  fi
-
-  if ! mmcli -m "${MODEM_PATH}" | grep -q 'state:[[:space:]]*connected'; then
-    log watch "Modem not connected. Attempting simple-connect..."
-    if ! mmcli -m "${MODEM_PATH}" --simple-connect="apn=${APN},ip-type=ipv4" >/dev/null; then
-       log watch "WARN: simple-connect command failed."
-       return 1
-    fi
-    log watch "Connection command sent. Waiting for connected state..."
-    # 연결 상태가 될 때까지 잠시 대기 (최대 15초)
-    for _ in $(seq 1 15); do
-      if mmcli -m "${MODEM_PATH}" | grep -q 'state:[[:space:]]*connected'; then
-        log watch "Modem is now connected."
-        # 연결 후 route가 생길 시간을 조금 더 줌
-        sleep 3
-        return 0
-      fi
-      sleep 1
-    done
-    log watch "WARN: Modem did not reach connected state."
-    return 1
-  fi
-  log watch "Modem is already connected."
-  return 0
-}
-
-bounce_lte_and_restore_standby() {
-  # LTE 링크 리프레시 (세션 끊기)
-  log watch "Bouncing LTE link (${LTE_IF}) to refresh session"
-  ip netns exec "${NS}" ip link set "${LTE_IF}" down 2>/dev/null || true
-  sleep "${LTE_BOUNCE_SEC}"
-  ip netns exec "${NS}" ip link set "${LTE_IF}" up 2>/dev/null || true
-
-  # 연결 재시도 및 standby 라우트(메트릭 높게)
-  ensure_lte_connected || true
-  local LTE_GW
-  for _ in $(seq 1 5); do
-    LTE_GW="$(get_lte_gw)"
-    [ -n "${LTE_GW}" ] && break
-    sleep 1
-  done
-
-  if [ -n "${LTE_GW}" ]; then
-    ip netns exec "${NS}" ip route replace default via "${LTE_GW}" dev "${LTE_IF}" onlink metric 100 || true
-    log watch "LTE standby route restored (via ${LTE_GW})"
-  else
-    log watch "WARN: could not find LTE GW to restore standby route"
-  fi
-}
-
 # -------- initial baseline in netns --------
-# prio-ns-ensure.sh가 남긴 초기 상태를 그대로 사용
-# host<->ns point-to-point (veth)
-ip netns exec "${NS}" ip route replace "${HOST_VETH_IP}/32" dev "${VETH_NS}" || true
+# prio-ns-ensure.sh가 모든 네임스페이스, 인터페이스, 라우트(main/standby) 설정을 완료했다고 가정
+log watch "Assuming prio-ns-ensure.sh has configured the network correctly."
+log watch "Starting monitoring loop..."
 
-# rp_filter relax (host/netns) - ensure에서 했지만 여기서도 확인
+# rp_filter relax (host) - ensure에서 했지만 여기서도 확인
 set_host_rpf_relax
-ip netns exec "${NS}" sh -c '
-  sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null
-  sysctl -w net.ipv4.conf.default.rp_filter=2 >/dev/null
-' || true
-
-# 기본값: MAIN 경로(호스트로) 우선
-ip netns exec "${NS}" ip route replace default via "${HOST_VETH_IP}" dev "${VETH_NS}" metric 10 || true
 
 current="main"
 main_fail=0
@@ -169,17 +105,6 @@ trap '
   ip netns exec "'"${NS}"'" ip route replace default via "'"${HOST_VETH_IP}"'" dev "'"${VETH_NS}"'" metric 10 || true
   exit 0
 ' INT TERM
-
-# LTE standby 미리 준비 (prio-ns-ensure.sh가 실패했을 경우 대비)
-log watch "Initial check for LTE standby route..."
-ensure_lte_connected || true
-LTE_GW_INIT="$(get_lte_gw)"
-if [ -n "${LTE_GW_INIT}" ]; then
-  ip netns exec "${NS}" ip route replace default via "${LTE_GW_INIT}" dev "${LTE_IF}" onlink metric 100 || true
-  log watch "LTE standby route ensured (via ${LTE_GW_INIT})"
-else
-  log watch "WARN: Initial LTE standby route could not be set."
-fi
 
 # -------- main loop --------
 while true; do
@@ -193,34 +118,36 @@ while true; do
 
   if [ "${current}" = "main" ]; then
     if [ "${main_fail}" -ge "${FAIL_THRESHOLD}" ]; then
-      log watch "MAIN unhealthy -> switch to LTE"
-      # LTE 연결 보장 및 GW 확인
-      ensure_lte_connected || true
+      log watch "MAIN unhealthy -> switching to LTE"
       LTE_GW="$(get_lte_gw)"
       if [ -n "${LTE_GW}" ]; then
-        # netns default -> LTE
+        # NS default: LTE 우선 (metric 10)
         ip netns exec "${NS}" ip route replace default via "${LTE_GW}" dev "${LTE_IF}" onlink metric 10 || true
-        # netns default -> MAIN(veth)은 standby로
+        # NS default: MAIN은 대기 (metric 100)
         ip netns exec "${NS}" ip route replace default via "${HOST_VETH_IP}" dev "${VETH_NS}" metric 100 || true
-        # host default -> veth-main (외부로 나가는 길을 ns로)
+        # Host default -> veth-main (외부로 나가는 길을 ns로)
         switch_host_default_to_ns
         current="lte"
         main_fail=0
         main_ok=0
         log watch "DEFAULT -> LTE (host+ns)"
       else
-        log watch "LTE GW missing; staying on MAIN"
+        # 이 경고는 prio-ns-ensure.sh가 실패했음을 의미
+        log watch "WARN: LTE GW not found. Cannot switch."
       fi
     fi
   else # current=lte
     if [ "${main_ok}" -ge "${RECOVER_THRESHOLD}" ]; then
-      log watch "MAIN recovered -> cutover to MAIN and bounce LTE"
-      # netns default -> MAIN(veth)
+      log watch "MAIN recovered -> switching back to MAIN"
+      # NS default: MAIN 우선 (metric 10)
       ip netns exec "${NS}" ip route replace default via "${HOST_VETH_IP}" dev "${VETH_NS}" metric 10 || true
-      # host default 복구
+      # NS default: LTE는 대기 (metric 100)
+      LTE_GW="$(get_lte_gw)"
+      if [ -n "${LTE_GW}" ]; then
+        ip netns exec "${NS}" ip route replace default via "${LTE_GW}" dev "${LTE_IF}" onlink metric 100 || true
+      fi
+      # Host default 복구
       restore_host_default
-      # LTE standby (세션 끊고 재접속 후 standby 라우트 설정)
-      bounce_lte_and_restore_standby
       current="main"
       main_fail=0
       main_ok=0
