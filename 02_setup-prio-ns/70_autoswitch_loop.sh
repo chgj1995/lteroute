@@ -41,17 +41,24 @@ restore_host_default() {
 }
 
 del_non_veth_defaults() {
-  # veth-main 이외의 default 들을 모두 제거(충돌 방지)
-  ip -4 route show default | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1)}}' \
-    | grep -v -E "^${VETH_MAIN}\$" | while read -r dev; do
-        ip -4 route show default dev "${dev}" | while read -r _ _ gw _; do
-          ip -4 route del default via "${gw}" dev "${dev}" 2>/dev/null || true
-        done
-      done
+  # veth-main 이외의 default 경로들을 모두 제거 (충돌 방지)
+  # grep을 사용하면 대상이 없을 때 0이 아닌 값을 반환하여 'set -e'에 의해 스크립트가 종료될 수 있음.
+  # 따라서 한 줄씩 읽어 처리하는 견고한 while 루프 사용.
+  local line
+  ip -4 route show default | while read -r line; do
+    # 라인에서 'dev' 뒤의 디바이스 이름을 추출
+    local dev
+    dev=$(echo "$line" | sed -n 's/.* dev \([^ ]\+\).*/\1/p')
+    # 디바이스 이름이 veth-main이 아니면 해당 경로 삭제
+    if [[ -n "$dev" && "$dev" != "${VETH_MAIN}" ]]; then
+      log watch "Removing conflicting default route: $line"
+      ip -4 route del $line 2>/dev/null || true
+    fi
+  done
 }
 
 switch_host_default_to_ns() {
-  log watch "HOST default -> veth-main (${HOST_VETH_IP} peer: ${NS})"
+  log watch "HOST default -> veth-main (${HOST_VETH_IP%/*} peer: ${NS})"
   backup_host_default
   del_non_veth_defaults
   # veth-main 경유 default를 낮은 metric으로 지정
