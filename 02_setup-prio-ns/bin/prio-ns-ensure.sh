@@ -37,24 +37,6 @@ MODEM_PATH="$($MM -L 2>/dev/null | sed -n 's/^[[:space:]]*\([/].*Modem\/[0-9]\+\
 log "Modem: ${MODEM_PATH}"
 
 # --- Helper Functions ---
-# Finds the first available bearer, regardless of state
-find_any_bearer() {
-  # 구버전 mmcli 호환성을 위해 grep 사용
-  $MM -m "$1" | grep -o '/org/freedesktop/ModemManager1/Bearer/[0-9]\+' | head -n1
-}
-
-# Finds a bearer that is already connected and has IPv4 config
-pick_data_bearer() {
-  local mp="$1" b BEARERS
-  mapfile -t BEARERS < <($MM -m "$mp" 2>/dev/null | grep -o '/org/freedesktop/ModemManager1/Bearer/[0-9]\+')
-  for b in "${BEARERS[@]}"; do
-    $MM -b "$b" 2>/dev/null | grep -q 'connected:[[:space:]]*yes' || continue
-    $MM -b "$b" -K 2>/dev/null | grep -q '^bearer.ipv4.method:' || continue
-    echo "$b"; return 0
-  done
-  return 1
-}
-
 verify_connection() {
   local iface="$1"
   log "Verifying connection on interface ${iface} in netns ${NS}..."
@@ -74,36 +56,31 @@ MAX_RETRIES=2
 for i in $(seq 1 ${MAX_RETRIES}); do
   log "--- Attempt ${i}/${MAX_RETRIES} to establish and verify LTE connection ---"
 
-  # 1) 베어러 재사용 또는 생성 (모든 리셋 로직 제거)
-  log "Searching for existing bearer to reuse..."
-  BEARER_PATH=$(find_any_bearer "$MODEM_PATH")
-
-  if [ -n "$BEARER_PATH" ]; then
-    log "Found existing bearer: ${BEARER_PATH}."
-    if ! $MM -b "$BEARER_PATH" | grep -q 'state:[[:space:]]*connected'; then
-      log "Bearer is not connected. Attempting to connect..."
-      $MM -b "$BEARER_PATH" --connect >/dev/null 2>&1 || true
-      sleep 3
-    else
-      log "Bearer is already connected."
-    fi
-  else
-    log "No existing bearer found. Creating a new one..."
-    BEARER_PATH=$($MM -m "$MODEM_PATH" --create-bearer="apn=${APN},ip-type=${IP_TYPE}" | sed -n 's/.*\(\/org\/freedesktop\/ModemManager1\/Bearer\/[0-9]\+\).*/\1/p' || true)
-    if [ -z "$BEARER_PATH" ]; then
-      log "WARN: Failed to create a new bearer. Retrying..."
+  # 1) 'simple-connect'를 사용하여 연결 보장
+  if ! $MM -m "$MODEM_PATH" | grep -q 'state:[[:space:]]*connected'; then
+    log "Modem not connected. Running simple-connect..."
+    if ! $MM -m "$MODEM_PATH" --simple-connect="apn=${APN},ip-type=${IP_TYPE}" >/dev/null; then
+      log "WARN: simple-connect command failed. Retrying..."
       sleep 3
       continue
     fi
-    log "New bearer created: ${BEARER_PATH}. Connecting..."
-    $MM -b "$BEARER_PATH" --connect >/dev/null 2>&1 || true
-    sleep 3
+    # 폴링 루프: 최대 15초간 '연결된 데이터 베어러'를 찾음
+    log "simple-connect command issued. Polling for a connected data bearer..."
+    for _ in $(seq 1 15); do
+      FINAL_BEARER_PATH="$(pick_data_bearer "$MODEM_PATH" || true)"
+      if [ -n "$FINAL_BEARER_PATH" ]; then
+        break
+      fi
+      sleep 1
+    done
+  else
+    log "Modem already in 'connected' state."
+    FINAL_BEARER_PATH="$(pick_data_bearer "$MODEM_PATH" || true)"
   fi
 
   # 2) 최종적으로 사용 가능한 데이터 베어러 확인
-  FINAL_BEARER_PATH="$(pick_data_bearer "$MODEM_PATH" || true)"
   if [ -z "$FINAL_BEARER_PATH" ]; then
-      log "WARN: Failed to get a usable (connected + IPv4) bearer. Retrying..."
+      log "WARN: Could not find a usable (connected + IPv4) bearer. Retrying..."
       sleep 3
       continue
   fi
