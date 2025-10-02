@@ -101,17 +101,18 @@ for i in $(seq 1 ${MAX_RETRIES}); do
   fi
   log "Using verified data bearer: ${FINAL_BEARER_PATH}"
 
-  # 3) IPv4/IFACE 정보 파싱
-  eval "$( $MM -b "$FINAL_BEARER_PATH" -K 2>/dev/null | awk -F= '
-      $1=="bearer.interface"         { printf("IFACE=\"%s\"\n",$2) }
-      $1=="bearer.ipv4.address"      { printf("ADDR=\"%s\"\n",$2) }
-      $1=="bearer.ipv4.prefix"       { printf("PFX=\"%s\"\n",$2) }
-      $1=="bearer.ipv4.gateway"      { printf("GW=\"%s\"\n",$2) }
-      $1=="bearer.ipv4.mtu"          { printf("MTU=\"%s\"\n",$2) }
-      $1=="bearer.ipv4.dns1"         { printf("DNS1=\"%s\"\n",$2) }
-      $1=="bearer.ipv4.dns2"         { printf("DNS2=\"%s\"\n",$2) }
-  ')"
+  # 3) IPv4/IFACE 정보 파싱 (호환성 보장)
+  DETAIL="$($MM -b "$FINAL_BEARER_PATH" 2>/dev/null || true)"
+  IFACE="$(printf '%s\n' "$DETAIL" | sed -n 's/^[[:space:]]*|[[:space:]]*interface:[[:space:]]*\(.*\)$/\1/p' | head -n1)"
   : "${IFACE:=wwan0}"
+
+  BLK="$(printf '%s\n' "$DETAIL" | sed -n '/^  IPv4 configuration /,/^  --------------------------------/p')"
+  ADDR="$(printf '%s\n' "$BLK" | sed -n 's/.*address:[[:space:]]*\(.*\)$/\1/p' | head -n1)"
+  PFX="$( printf '%s\n' "$BLK" | sed -n 's/.*prefix:[[:space:]]*\(.*\)$/\1/p'  | head -n1)"
+  GW="$(  printf '%s\n' "$BLK" | sed -n 's/.*gateway:[[:space:]]*\(.*\)$/\1/p' | head -n1)"
+  MTU="$( printf '%s\n' "$BLK" | sed -n 's/.*mtu:[[:space:]]*\(.*\)$/\1/p'     | head -n1)"
+  DNS1="$(printf '%s\n' "$BLK" | sed -n 's/.*dns:[[:space:]]*\([0-9.]\+\).*/\1/p' | head -n1)"
+  DNS2="$(printf '%s\n' "$BLK" | sed -n 's/.*dns:[[:space:]]*[0-9.]\+,[[:space:]]*\([0-9.]\+\).*/\1/p' | head -n1)"
   log "Bearer: ${FINAL_BEARER_PATH} iface=${IFACE} ${ADDR}/${PFX} gw=${GW} dns=${DNS1},${DNS2}"
 
   if [ -z "${ADDR:-}" ] || [ -z "${GW:-}" ] || [ -z "${DNS1:-}" ]; then
