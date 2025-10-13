@@ -71,6 +71,22 @@ set_host_rpf_relax() {
   sysctl -w net.ipv4.conf.all.rp_filter=2          >/dev/null 2>&1 || true
 }
 
+# prio-ns-ensure.sh와 동일한 로직을 사용하여 현재 연결된 데이터 베어러를 찾음
+pick_data_bearer() {
+  local mp="$1" b BEARERS detail
+  mapfile -t BEARERS < <(mmcli -m "$mp" 2>/dev/null | grep -o '/org/freedesktop/ModemManager1/Bearer/[0-9]\+')
+  for b in "${BEARERS[@]}"; do
+    detail="$(mmcli -b "$b" 2>/dev/null)"
+    # 1. 연결되어 있는지 확인
+    echo "$detail" | grep -q 'connected:[[:space:]]*yes' || continue
+    # 2. IPv4 설정 블록과 주소가 있는지 확인 (가장 확실한 방법)
+    if echo "$detail" | grep -q 'IPv4 configuration' && echo "$detail" | grep -q 'address:'; then
+      echo "$b"; return 0
+    fi
+  done
+  return 1
+}
+
 check_iface() {  # $1 = IFACE in netns (VETH_NS)
   # 1. 호스트에 기본 인터넷 경로가 있는지 먼저 확인
   # 호스트의 주 연결(예: 이더넷 DHCP)이 설정되기 전까지는 prio_ns를 통한 ping이 의미 없음.
@@ -104,10 +120,24 @@ check_iface() {  # $1 = IFACE in netns (VETH_NS)
 }
 
 get_lte_gw() {
-  # onlink 경로에서 GW를 직접 추출
-  ip netns exec "${NS}" ip -4 route show dev "${LTE_IF}" \
-    | sed -n 's/default via \([0-9.]\+\) .*onlink.*/\1/p' \
-    | head -n1
+  # [중요] OS 라우팅 테이블이 아닌, ModemManager(진실의 원천)에서 직접 GW 정보를 가져옴.
+  # 이는 외부 요인(NetworkManager 등)에 의해 라우팅 정보가 변경되더라도 안정적으로 GW를 찾기 위함.
+  local MODEM_PATH BEARER_PATH DETAIL BLK
+  MODEM_PATH="$(mmcli -L 2>/dev/null | sed -n 's/^[[:space:]]*\([/].*Modem\/[0-9]\+\).*/\1/p' | head -n1)"
+  if [ -z "$MODEM_PATH" ]; then
+    log watch "WARN: No modem found by get_lte_gw."
+    return 1
+  fi
+
+  BEARER_PATH="$(pick_data_bearer "$MODEM_PATH")"
+  if [ -z "$BEARER_PATH" ]; then
+    log watch "WARN: No active data bearer found by get_lte_gw."
+    return 1
+  fi
+
+  DETAIL="$(mmcli -b "$BEARER_PATH" 2>/dev/null || true)"
+  BLK="$(printf '%s\n' "$DETAIL" | sed -n '/^  IPv4 configuration /,/^  --------------------------------/p')"
+  printf '%s\n' "$BLK" | sed -n 's/.*gateway:[[:space:]]*\(.*\)$/\1/p' | head -n1
 }
 
 # -------- initial baseline in netns --------
