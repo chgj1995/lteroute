@@ -87,13 +87,6 @@ check_iface() {  # $1 = IFACE in netns (VETH_NS or ${LTE_IF})
   return 1
 }
 
-get_lte_gw() {
-  # onlink 경로에서 GW를 직접 추출
-  ip netns exec "${NS}" ip -4 route show dev "${LTE_IF}" \
-    | sed -n 's/default via \([0-9.]\+\) .*onlink.*/\1/p' \
-    | head -n1
-}
-
 # -------- initial baseline in netns --------
 # prio-ns-ensure.sh가 모든 네임스페이스, 인터페이스, 라우트(main/standby) 설정을 완료했다고 가정
 log watch "Assuming prio-ns-ensure.sh has configured the network correctly."
@@ -104,52 +97,29 @@ set_host_rpf_relax
 
 trap '
   log watch "stop -> restore NS default to MAIN"
-  ip netns exec "'"${NS}"'" ip route replace default via "'"${HOST_VETH_IP}"'" dev "'"${VETH_NS}"'" metric 10 || true
+  # MAIN 우선 (metric 10)
+  ip netns exec "'"${NS}"'" ip route replace default dev "'"${VETH_NS}"'" metric 10
+  # LTE 대기 (metric 100)
+  ip netns exec "'"${NS}"'" ip route replace default dev "'"${LTE_IF}"'" metric 100
   exit 0
 ' INT TERM
 
 # -------- main loop --------
 while true; do
-  main_is_up="no"
   if check_iface "${VETH_NS}"; then
-    main_is_up="yes"
-  fi
-
-  lte_is_up="no"
-  if check_iface "${LTE_IF}"; then
-    lte_is_up="yes"
-  fi
-
-  # --- 라우팅 결정 ---
-  if [ "${main_is_up}" = "yes" ]; then
     # MAIN이 정상이면 MAIN을 우선으로 설정
     log watch "MAIN is healthy. Setting MAIN as primary."
     # NS default: MAIN 우선 (metric 10)
-    ip netns exec "${NS}" ip route replace default via "${HOST_VETH_IP}" dev "${VETH_NS}" metric 10 || true
+    ip netns exec "${NS}" ip route change default dev "${VETH_NS}" metric 10
     # NS default: LTE는 대기 (metric 100)
-    LTE_GW="$(get_lte_gw)"
-    if [ -n "${LTE_GW}" ]; then
-      ip netns exec "${NS}" ip route replace default via "${LTE_GW}" dev "${LTE_IF}" onlink metric 100 || true
-    fi
-    log watch "NS DEFAULT -> MAIN (LTE standby)"
-
-  elif [ "${lte_is_up}" = "yes" ]; then
-    # MAIN이 비정상이지만 LTE가 정상이면 LTE를 우선으로 설정
-    log watch "MAIN is unhealthy, but LTE is healthy. Setting LTE as primary."
-    LTE_GW="$(get_lte_gw)"
-    if [ -n "${LTE_GW}" ]; then
-      # NS default: LTE 우선 (metric 10)
-      ip netns exec "${NS}" ip route replace default via "${LTE_GW}" dev "${LTE_IF}" onlink metric 10 || true
-      # NS default: MAIN은 대기 (metric 100)
-      ip netns exec "${NS}" ip route replace default via "${HOST_VETH_IP}" dev "${VETH_NS}" metric 100 || true
-      log watch "NS DEFAULT -> LTE"
-    else
-      log watch "WARN: LTE is up, but GW not found. Cannot switch."
-    fi
-
+    ip netns exec "${NS}" ip route change default dev "${LTE_IF}" metric 100
   else
-    # 둘 다 비정상
-    log watch "WARN: Both MAIN and LTE are unhealthy. Holding current state."
+    # MAIN이 비정상이면 LTE를 우선으로 설정
+    log watch "MAIN is unhealthy. Setting LTE as primary."
+    # NS default: LTE 우선 (metric 10)
+    ip netns exec "${NS}" ip route change default dev "${LTE_IF}" metric 10
+    # NS default: MAIN은 대기 (metric 100)
+    ip netns exec "${NS}" ip route change default dev "${VETH_NS}" metric 100
   fi
 
   sleep "${INTERVAL}"
