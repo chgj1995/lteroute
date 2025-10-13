@@ -27,6 +27,17 @@ $IPBIN netns exec "${NS}" bash -lc "
   ip link set lo up || true
 "
 
+# 0-1) 호스트 NAT/Forward 규칙 적용 (부팅 시마다 실행 보장)
+# prio-ns-autoswitch.service의 WorkingDirectory가 install.sh에 의해 스크립트 폴더로 지정됨
+if [ -f "./60_nat_forward.sh" ]; then
+    log "Applying host NAT/Forward rules from ./60_nat_forward.sh"
+    # 00_common.sh를 소싱해야 하므로 bash로 실행
+    bash ./60_nat_forward.sh
+else
+    # systemd 저널에 경고를 남겨 문제 파악을 용이하게 함
+    log "WARN: 60_nat_forward.sh not found in working directory, skipping NAT setup."
+fi
+
 # 1) ModemManager가 모뎀을 인식할 때까지 대기(최대 20초)
 for _ in $(seq 1 40); do
   if $MM -L 2>/dev/null | grep -q '/org/freedesktop/ModemManager1/Modem/'; then break; fi
