@@ -25,6 +25,8 @@ $IPBIN netns exec "${NS}" bash -lc "
   ip addr show dev ${VETH_NS} | grep -q '${NS_IP}' || ip addr add ${NS_IP} dev ${VETH_NS} || true
   ip link set ${VETH_NS} up || true
   ip link set lo up || true
+  # veth-ns를 통해 main-ns로 나가는 기본 경로 설정 (우선순위 10)
+  ip route replace default via ${HOST_IP%/*} dev ${VETH_NS} metric 10 onlink
 "
 
 # 0-1) 호스트 NAT/Forward 규칙 적용 (부팅 시마다 실행 보장)
@@ -65,16 +67,38 @@ pick_data_bearer() {
 
 verify_connection() {
   local iface="$1"
-  log "Verifying connection on interface ${iface} in netns ${NS}..."
+  local gw="$2"
+  local target="8.8.8.8"
+  local result=1
+
+  # gw가 비어있으면 실패 처리
+  if [ -z "${gw}" ]; then
+    log "WARN: Gateway is empty, verification skipped for ${iface}."
+    return 1
+  fi
+
+  log "Verifying connection on interface ${iface} via gateway ${gw}..."
+
+  # 대상 IP에 대한 명시적 경로 추가 (라우팅 충돌 방지)
+  $IPBIN netns exec "${NS}" ip route add "${target}/32" via "${gw}" dev "${iface}" >/dev/null 2>&1 || true
+
   for _ in $(seq 1 3); do
-    if ip netns exec "${NS}" ping -I "${iface}" -c 1 -W 3 8.8.8.8 >/dev/null 2>&1; then
+    if $IPBIN netns exec "${NS}" ping -c 1 -W 3 "${target}" >/dev/null 2>&1; then
       log "Connection on ${iface} is VERIFIED."
-      return 0
+      result=0
+      break
     fi
     sleep 1
   done
-  log "WARN: Connection on ${iface} failed verification."
-  return 1
+
+  if [ "$result" -ne 0 ]; then
+    log "WARN: Connection on ${iface} failed verification."
+  fi
+
+  # 임시 경로 삭제
+  $IPBIN netns exec "${NS}" ip route del "${target}/32" via "${gw}" dev "${iface}" >/dev/null 2>&1 || true
+
+  return $result
 }
 
 # --- Main Connection Logic ---
@@ -141,6 +165,7 @@ for i in $(seq 1 ${MAX_RETRIES}); do
     ip addr add ${ADDR}/${PFX} dev ${IFACE}
     [ -n '${MTU:-}' ] && ip link set ${IFACE} mtu ${MTU}
     ip link set ${IFACE} up
+    # LTE 경로는 대기(standby)용으로 낮은 우선순위(metric 100) 부여
     ip route replace default via ${GW} dev ${IFACE} metric 100 onlink
   "
   mkdir -p "/etc/netns/${NS}"
@@ -148,7 +173,7 @@ for i in $(seq 1 ${MAX_RETRIES}); do
   log "Applied LTE IPv4 settings in ${NS}."
 
   # 5) 연결 검증
-  if verify_connection "${IFACE}"; then
+  if verify_connection "${IFACE}" "${GW}"; then
     log "--- LTE connection successfully established and verified. ---"
     exit 0 # 최종 성공
   fi
