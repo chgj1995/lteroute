@@ -40,7 +40,7 @@ Wants=network-online.target ModemManager.service
 [Service]
 Type=simple
 WorkingDirectory=${DIR}
-ExecStartPre=/usr/local/sbin/prepare-prio-ns.sh
+ExecStartPre=/usr/local/sbin/prepare-prio-ns.sh "${DIR}"
 ExecStart=/usr/bin/env bash ${DIR}/70_autoswitch_loop.sh
 Restart=always
 RestartSec=2
