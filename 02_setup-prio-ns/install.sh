@@ -40,7 +40,9 @@ Before=tailscaled.service tailscale-route-restore.service
 [Service]
 Type=simple
 WorkingDirectory=${DIR}
-ExecStartPre=/usr/local/sbin/prio-ns-ensure.sh
+ExecStartPre=-/usr/bin/env bash -c 'echo "Pre-start: creating namespace..." && "${DIR}/10_ns_create.sh"'
+ExecStartPre=-/usr/bin/env bash -c 'echo "Pre-start: setting up host NAT..." && "${DIR}/60_nat_forward.sh"'
+ExecStartPre=-/usr/local/sbin/prio-ns-ensure.sh
 ExecStart=/usr/bin/env bash ${DIR}/70_autoswitch_loop.sh
 Restart=always
 RestartSec=2
