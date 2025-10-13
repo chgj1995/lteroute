@@ -37,6 +37,8 @@ MODEM_PATH="$($MM -L 2>/dev/null | sed -n 's/^[[:space:]]*\([/].*Modem\/[0-9]\+\
 log "Modem: ${MODEM_PATH}"
 
 # --- Helper Functions ---
+CHECK_HOSTS=(8.8.8.8 1.1.1.1)
+
 pick_data_bearer() {
   local mp="$1" b BEARERS detail
   mapfile -t BEARERS < <($MM -m "$mp" 2>/dev/null | grep -o '/org/freedesktop/ModemManager1/Bearer/[0-9]\+')
@@ -55,13 +57,20 @@ pick_data_bearer() {
 verify_connection() {
   local iface="$1"
   log "Verifying connection on interface ${iface} in netns ${NS}..."
-  for _ in $(seq 1 3); do
-    if ip netns exec "${NS}" ping -I "${iface}" -c 1 -W 3 8.8.8.8 >/dev/null 2>&1; then
-      log "Connection on ${iface} is VERIFIED."
+  for h in "${CHECK_HOSTS[@]}"; do
+    if ip netns exec "${NS}" ping -I "$1" -c1 -W3 "$h" >/dev/null 2>&1; then
+      log "Connection on ${iface} is VERIFIED via ping to $h."
       return 0
     fi
-    sleep 1
   done
+  if command -v nc >/dev/null 2>&1; then
+    for h in "${CHECK_HOSTS[@]}"; do
+      if ip netns exec "${NS}" bash -lc "printf '' | timeout 3 nc -vz -I $1 $h 53" >/dev/null 2>&1; then
+        log "Connection on ${iface} is VERIFIED via nc to $h:53."
+        return 0
+      fi
+    done
+  fi
   log "WARN: Connection on ${iface} failed verification."
   return 1
 }
