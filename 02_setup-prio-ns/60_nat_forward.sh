@@ -7,5 +7,6 @@ for OUT in "${CHECK_OUT_IFS[@]}"; do
     iptables -t nat -A POSTROUTING -o "${OUT}" -j MASQUERADE
 done
 iptables -C FORWARD -i "${VETH_MAIN}" -j ACCEPT >/dev/null 2>&1 || iptables -A FORWARD -i "${VETH_MAIN}" -j ACCEPT
-iptables -C FORWARD -o "${VETH_MAIN}" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT >/dev/null 2>&1 || \
-  iptables -A FORWARD -o "${VETH_MAIN}" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+# prio_ns로 돌아오는 트래픽 허용 (ping 응답 등)
+iptables -C FORWARD -o "${VETH_MAIN}" -j ACCEPT >/dev/null 2>&1 || \
+  iptables -A FORWARD -o "${VETH_MAIN}" -j ACCEPT
