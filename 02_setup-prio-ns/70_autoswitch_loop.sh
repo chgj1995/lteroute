@@ -71,7 +71,23 @@ set_host_rpf_relax() {
   sysctl -w net.ipv4.conf.all.rp_filter=2          >/dev/null 2>&1 || true
 }
 
-check_iface() {  # $1 = IFACE in netns (VETH_NS or ${LTE_IF})
+check_iface() {  # $1 = IFACE in netns (VETH_NS)
+  # 1. 호스트에 기본 인터넷 경로가 있는지 먼저 확인
+  # 호스트의 주 연결(예: 이더넷 DHCP)이 설정되기 전까지는 prio_ns를 통한 ping이 의미 없음.
+  if ! ip route show default | grep -q '.*'; then
+    if [ "${host_route_ok}" = true ]; then
+      log watch "Host default route not found. Assuming main connection is down."
+      host_route_ok=false
+    fi
+    return 1
+  fi
+  # 호스트 경로가 다시 생긴 경우 로그를 남김
+  if [ "${host_route_ok}" = false ]; then
+    log watch "Host default route is back. Resuming main connection check."
+    host_route_ok=true
+  fi
+
+  # 2. prio_ns 내부에서 실제 인터넷 연결 확인 (ping/nc)
   for h in "${CHECK_HOSTS[@]}"; do
     if ip netns exec "${NS}" ping -I "$1" -c1 -W1 "$h" >/dev/null 2>&1; then
       return 0
@@ -110,6 +126,7 @@ set_host_rpf_relax
 current="main"
 main_fail=0
 main_ok=0
+host_route_ok=true # 호스트 기본 경로 상태 추적 변수
 
 trap '
   log watch "stop -> restore NS default"
