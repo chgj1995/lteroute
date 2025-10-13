@@ -136,7 +136,9 @@ for i in $(seq 1 ${MAX_RETRIES}); do
   { echo "nameserver ${DNS1}"; [ -n "${DNS2:-}" ] && echo "nameserver ${DNS2}"; } > "/etc/netns/${NS}/resolv.conf"
   log "Applied LTE IPv4 settings in ${NS}."
 
-  # 5) 연결 검증
+  # 5) 연결 검증 (레이스 컨디션을 피하기 위해 잠시 대기)
+  log "Waiting for data path to be ready..."
+  sleep 5
   if verify_connection "${IFACE}"; then
     log "--- LTE connection successfully established and verified. ---"
     exit 0 # 최종 성공
