@@ -102,64 +102,54 @@ log watch "Starting monitoring loop..."
 # rp_filter relax (host) - ensure에서 했지만 여기서도 확인
 set_host_rpf_relax
 
-current="main"
-main_fail=0
-main_ok=0
-
 trap '
-  log watch "stop -> restore NS default"
-  # restore_host_default
+  log watch "stop -> restore NS default to MAIN"
   ip netns exec "'"${NS}"'" ip route replace default via "'"${HOST_VETH_IP}"'" dev "'"${VETH_NS}"'" metric 10 || true
   exit 0
 ' INT TERM
 
 # -------- main loop --------
 while true; do
+  main_is_up="no"
   if check_iface "${VETH_NS}"; then
-    main_fail=0
-    main_ok=$((main_ok+1))
-  else
-    main_fail=$((main_fail+1))
-    main_ok=0
+    main_is_up="yes"
   fi
 
-  if [ "${current}" = "main" ]; then
-    if [ "${main_fail}" -ge "${FAIL_THRESHOLD}" ]; then
-      log watch "MAIN unhealthy -> switching to LTE"
-      LTE_GW="$(get_lte_gw)"
-      if [ -n "${LTE_GW}" ]; then
-        # NS default: LTE 우선 (metric 10)
-        ip netns exec "${NS}" ip route replace default via "${LTE_GW}" dev "${LTE_IF}" onlink metric 10 || true
-        # NS default: MAIN은 대기 (metric 100)
-        ip netns exec "${NS}" ip route replace default via "${HOST_VETH_IP}" dev "${VETH_NS}" metric 100 || true
-        # Host default 변경은 비활성화
-        # switch_host_default_to_ns
-        current="lte"
-        main_fail=0
-        main_ok=0
-        log watch "NS DEFAULT -> LTE"
-      else
-        # 이 경고는 prio-ns-ensure.sh가 실패했음을 의미
-        log watch "WARN: LTE GW not found. Cannot switch."
-      fi
+  lte_is_up="no"
+  if check_iface "${LTE_IF}"; then
+    lte_is_up="yes"
+  fi
+
+  # --- 라우팅 결정 ---
+  if [ "${main_is_up}" = "yes" ]; then
+    # MAIN이 정상이면 MAIN을 우선으로 설정
+    log watch "MAIN is healthy. Setting MAIN as primary."
+    # NS default: MAIN 우선 (metric 10)
+    ip netns exec "${NS}" ip route replace default via "${HOST_VETH_IP}" dev "${VETH_NS}" metric 10 || true
+    # NS default: LTE는 대기 (metric 100)
+    LTE_GW="$(get_lte_gw)"
+    if [ -n "${LTE_GW}" ]; then
+      ip netns exec "${NS}" ip route replace default via "${LTE_GW}" dev "${LTE_IF}" onlink metric 100 || true
     fi
-  else # current=lte
-    if [ "${main_ok}" -ge "${RECOVER_THRESHOLD}" ]; then
-      log watch "MAIN recovered -> switching back to MAIN"
-      # NS default: MAIN 우선 (metric 10)
-      ip netns exec "${NS}" ip route replace default via "${HOST_VETH_IP}" dev "${VETH_NS}" metric 10 || true
-      # NS default: LTE는 대기 (metric 100)
-      LTE_GW="$(get_lte_gw)"
-      if [ -n "${LTE_GW}" ]; then
-        ip netns exec "${NS}" ip route replace default via "${LTE_GW}" dev "${LTE_IF}" onlink metric 100 || true
-      fi
-      # Host default 복구 비활성화
-      # restore_host_default
-      current="main"
-      main_fail=0
-      main_ok=0
-      log watch "NS DEFAULT -> MAIN (LTE standby)"
+    log watch "NS DEFAULT -> MAIN (LTE standby)"
+
+  elif [ "${lte_is_up}" = "yes" ]; then
+    # MAIN이 비정상이지만 LTE가 정상이면 LTE를 우선으로 설정
+    log watch "MAIN is unhealthy, but LTE is healthy. Setting LTE as primary."
+    LTE_GW="$(get_lte_gw)"
+    if [ -n "${LTE_GW}" ]; then
+      # NS default: LTE 우선 (metric 10)
+      ip netns exec "${NS}" ip route replace default via "${LTE_GW}" dev "${LTE_IF}" onlink metric 10 || true
+      # NS default: MAIN은 대기 (metric 100)
+      ip netns exec "${NS}" ip route replace default via "${HOST_VETH_IP}" dev "${VETH_NS}" metric 100 || true
+      log watch "NS DEFAULT -> LTE"
+    else
+      log watch "WARN: LTE is up, but GW not found. Cannot switch."
     fi
+
+  else
+    # 둘 다 비정상
+    log watch "WARN: Both MAIN and LTE are unhealthy. Holding current state."
   fi
 
   sleep "${INTERVAL}"
