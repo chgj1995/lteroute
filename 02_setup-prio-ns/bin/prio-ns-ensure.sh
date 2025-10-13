@@ -55,6 +55,15 @@ pick_data_bearer() {
 verify_connection() {
   local iface="$1"
   log "Verifying connection on interface ${iface} in netns ${NS}..."
+
+  # --- DEBUG ---
+  local SCRIPT_DIR
+  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+  if [ -f "${SCRIPT_DIR}/debug_net_state.sh" ]; then
+    bash "${SCRIPT_DIR}/debug_net_state.sh"
+  fi
+  # --- END DEBUG ---
+
   for _ in $(seq 1 3); do
     if ip netns exec "${NS}" ping -I "${iface}" -c 1 -W 3 8.8.8.8 >/dev/null 2>&1; then
       log "Connection on ${iface} is VERIFIED."
@@ -136,9 +145,7 @@ for i in $(seq 1 ${MAX_RETRIES}); do
   { echo "nameserver ${DNS1}"; [ -n "${DNS2:-}" ] && echo "nameserver ${DNS2}"; } > "/etc/netns/${NS}/resolv.conf"
   log "Applied LTE IPv4 settings in ${NS}."
 
-  # 5) 연결 검증 (레이스 컨디션을 피하기 위해 잠시 대기)
-  log "Waiting for data path to be ready..."
-  sleep 5
+  # 5) 연결 검증
   if verify_connection "${IFACE}"; then
     log "--- LTE connection successfully established and verified. ---"
     exit 0 # 최종 성공
