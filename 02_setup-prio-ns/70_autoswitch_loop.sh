@@ -97,6 +97,11 @@ get_lte_gw() {
 # -------- initial baseline in netns --------
 # prio-ns-ensure.sh가 모든 네임스페이스, 인터페이스, 라우트(main/standby) 설정을 완료했다고 가정
 log watch "Assuming prio-ns-ensure.sh has configured the network correctly."
+
+# [중요] veth 인터페이스(main)는 물리적 연결 상태와 무관하게 항상 'UP' 상태를 유지합니다.
+# 따라서, 커널의 metric 기반 자동 경로 전환이 동작하지 않습니다.
+# 이 스크립트는 주기적으로 주 경로(veth-ns)의 실제 인터넷 연결을 'check_iface' 함수로
+# 능동적으로 확인하고, 실패 시에만 동적으로 라우팅 테이블을 변경하여 LTE로 전환합니다.
 log watch "Starting monitoring loop..."
 
 # rp_filter relax (host) - ensure에서 했지만 여기서도 확인

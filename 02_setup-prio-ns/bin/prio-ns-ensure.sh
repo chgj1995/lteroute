@@ -25,7 +25,9 @@ $IPBIN netns exec "${NS}" bash -lc "
   ip addr show dev ${VETH_NS} | grep -q '${NS_IP}' || ip addr add ${NS_IP} dev ${VETH_NS} || true
   ip link set ${VETH_NS} up || true
   ip link set lo up || true
-  # veth-ns를 통해 main-ns로 나가는 기본 경로 설정 (우선순위 10)
+  # [중요] veth-ns를 주 경로(main)로, LTE를 예비 경로(standby)로 설정하는 초기 라우팅 테이블.
+  # veth 인터페이스는 물리적 연결과 무관하게 항상 UP 상태이므로, metric 기반의 자동 장애 조치는 동작하지 않음.
+  # 실제 장애 조치는 70_autoswitch_loop.sh에서 ping 테스트를 통해 연결 상태를 확인하고 동적으로 경로를 변경하여 수행됨.
   ip route replace default via ${HOST_IP%/*} dev ${VETH_NS} metric 10 onlink
 "
 
@@ -165,7 +167,8 @@ for i in $(seq 1 ${MAX_RETRIES}); do
     ip addr add ${ADDR}/${PFX} dev ${IFACE}
     [ -n '${MTU:-}' ] && ip link set ${IFACE} mtu ${MTU}
     ip link set ${IFACE} up
-    # LTE 경로는 대기(standby)용으로 낮은 우선순위(metric 100) 부여
+    # LTE 경로는 예비(standby)용으로 낮은 우선순위(metric 100)를 부여.
+    # 실제 전환 로직은 70_autoswitch_loop.sh에서 담당.
     ip route replace default via ${GW} dev ${IFACE} metric 100 onlink
   "
   mkdir -p "/etc/netns/${NS}"
