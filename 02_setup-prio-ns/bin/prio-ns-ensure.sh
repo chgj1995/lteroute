@@ -25,6 +25,8 @@ $IPBIN netns exec "${NS}" bash -lc "
   ip addr show dev ${VETH_NS} | grep -q '${NS_IP}' || ip addr add ${NS_IP} dev ${VETH_NS} || true
   ip link set ${VETH_NS} up || true
   ip link set lo up || true
+  # veth-ns를 통해 main-ns로 나가는 기본 경로 설정 (우선순위 10)
+  ip route replace default via ${HOST_IP%/*} dev ${VETH_NS} metric 10 onlink
 "
 
 # 1) ModemManager가 모뎀을 인식할 때까지 대기(최대 20초)
@@ -91,18 +93,19 @@ for i in $(seq 1 ${MAX_RETRIES}); do
   BLK="$(printf '%s\n' "$DETAIL" | sed -n '/^  IPv4 configuration /,/^  --------------------------------/p')"
   ADDR="$(printf '%s\n' "$BLK" | sed -n 's/.*address:[[:space:]]*\(.*\)$/\1/p' | head -n1)"
   PFX="$( printf '%s\n' "$BLK" | sed -n 's/.*prefix:[[:space:]]*\(.*\)$/\1/p'  | head -n1)"
+  GW="$(  printf '%s\n' "$BLK" | sed -n 's/.*gateway:[[:space:]]*\(.*\)$/\1/p' | head -n1)"
   MTU="$( printf '%s\n' "$BLK" | sed -n 's/.*mtu:[[:space:]]*\(.*\)$/\1/p'     | head -n1)"
   DNS1="$(printf '%s\n' "$BLK" | sed -n 's/.*dns:[[:space:]]*\([0-9.]\+\).*/\1/p' | head -n1)"
   DNS2="$(printf '%s\n' "$BLK" | sed -n 's/.*dns:[[:space:]]*[0-9.]\+,[[:space:]]*\([0-9.]\+\).*/\1/p' | head -n1)"
-  log "Bearer: ${FINAL_BEARER_PATH} iface=${IFACE} ${ADDR}/${PFX} dns=${DNS1},${DNS2}"
+  log "Bearer: ${FINAL_BEARER_PATH} iface=${IFACE} ${ADDR}/${PFX} gw=${GW} dns=${DNS1},${DNS2}"
 
-  if [ -z "${ADDR:-}" ] || [ -z "${DNS1:-}" ]; then
+  if [ -z "${ADDR:-}" ] || [ -z "${GW:-}" ] || [ -z "${DNS1:-}" ]; then
     log "WARN: Incomplete network info from bearer. Retrying..."
     sleep 3
     continue
   fi
 
-  # 3) 인터페이스를 NS로 이동 및 설정 (라우팅 제외)
+  # 3) 인터페이스를 NS로 이동 및 설정 (대기 경로 포함)
   if $IPBIN link show "$IFACE" >/dev/null 2>&1; then
     $IPBIN link set "$IFACE" netns "$NS" 2>/dev/null || true
   fi
@@ -111,10 +114,11 @@ for i in $(seq 1 ${MAX_RETRIES}); do
     ip addr add ${ADDR}/${PFX} dev ${IFACE}
     [ -n '${MTU:-}' ] && ip link set ${IFACE} mtu ${MTU}
     ip link set ${IFACE} up
+    ip route replace default via ${GW} dev ${IFACE} metric 100 onlink
   "
   mkdir -p "/etc/netns/${NS}"
   { echo "nameserver ${DNS1}"; [ -n "${DNS2:-}" ] && echo "nameserver ${DNS2}"; } > "/etc/netns/${NS}/resolv.conf"
-  log "Applied LTE IPv4 settings in ${NS} (no routes)."
+  log "Applied LTE IPv4 settings in ${NS} (with standby route)."
 
   log "--- LTE interface setup complete. ---"
   exit 0 # 성공

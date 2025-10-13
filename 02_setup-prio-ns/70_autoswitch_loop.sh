@@ -71,12 +71,21 @@ set_host_rpf_relax() {
   sysctl -w net.ipv4.conf.all.rp_filter=2          >/dev/null 2>&1 || true
 }
 
-check_iface() {  # $1 = IFACE in netns (VETH_NS or ${LTE_IF})
+check_iface() {  # $1 = IFACE in netns (VETH_NS)
+  # 1. 호스트에 기본 인터넷 경로가 있는지 먼저 확인
+  if ! ip route show default | grep -q '.*'; then
+    log watch "Host default route not found. Assuming main connection is down."
+    return 1
+  fi
+
+  # 2. 호스트 경로가 있다면, 실제 핑 테스트로 연결성 검증
   for h in "${CHECK_HOSTS[@]}"; do
     if ip netns exec "${NS}" ping -I "$1" -c1 -W1 "$h" >/dev/null 2>&1; then
       return 0
     fi
   done
+
+  # 핑이 실패하면 nc로 2차 확인
   if command -v nc >/dev/null 2>&1; then
     for h in "${CHECK_HOSTS[@]}"; do
       if ip netns exec "${NS}" bash -lc "printf '' | timeout 2 nc -vz -I $1 $h 80" >/dev/null 2>&1; then
@@ -84,6 +93,7 @@ check_iface() {  # $1 = IFACE in netns (VETH_NS or ${LTE_IF})
       fi
     done
   fi
+
   return 1
 }
 
