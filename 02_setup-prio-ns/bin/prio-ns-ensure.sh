@@ -57,21 +57,25 @@ pick_data_bearer() {
 verify_connection() {
   local iface="$1"
   log "Verifying connection on interface ${iface} in netns ${NS}..."
-  for h in "${CHECK_HOSTS[@]}"; do
-    if ip netns exec "${NS}" ping -I "$1" -c1 -W3 "$h" >/dev/null 2>&1; then
-      log "Connection on ${iface} is VERIFIED via ping to $h."
-      return 0
-    fi
-  done
-  if command -v nc >/dev/null 2>&1; then
+  for i in $(seq 1 5); do
     for h in "${CHECK_HOSTS[@]}"; do
-      if ip netns exec "${NS}" bash -lc "printf '' | timeout 3 nc -vz -I $1 $h 53" >/dev/null 2>&1; then
-        log "Connection on ${iface} is VERIFIED via nc to $h:53."
+      if ip netns exec "${NS}" ping -I "$1" -c1 -W2 "$h" >/dev/null 2>&1; then
+        log "Connection on ${iface} is VERIFIED via ping to $h (Attempt ${i}/5)."
         return 0
       fi
     done
-  fi
-  log "WARN: Connection on ${iface} failed verification."
+    if command -v nc >/dev/null 2>&1; then
+      for h in "${CHECK_HOSTS[@]}"; do
+        if ip netns exec "${NS}" bash -lc "printf '' | timeout 2 nc -vz -I $1 $h 53" >/dev/null 2>&1; then
+          log "Connection on ${iface} is VERIFIED via nc to $h:53 (Attempt ${i}/5)."
+          return 0
+        fi
+      done
+    fi
+    log "Connection not yet active, waiting... (${i}/5)"
+    sleep 1
+  done
+  log "WARN: Connection on ${iface} failed verification after 5 attempts."
   return 1
 }
 
@@ -139,13 +143,22 @@ for i in $(seq 1 ${MAX_RETRIES}); do
     ip addr add ${ADDR}/${PFX} dev ${IFACE}
     [ -n '${MTU:-}' ] && ip link set ${IFACE} mtu ${MTU}
     ip link set ${IFACE} up
-    ip route replace default via ${GW} dev ${IFACE} metric 100 onlink
+
+    # 경로를 추가 (replace 대신)
+    # MAIN (veth) 경로 - 우선순위 높음
+    ip route add default via ${HOST_IP%/*} dev ${VETH_NS} metric 10 onlink || ip route replace default via ${HOST_IP%/*} dev ${VETH_NS} metric 10 onlink
+    # LTE 경로 - 우선순위 낮음
+    ip route add default via ${GW} dev ${IFACE} metric 100 onlink || ip route replace default via ${GW} dev ${IFACE} metric 100 onlink
   "
   mkdir -p "/etc/netns/${NS}"
   { echo "nameserver ${DNS1}"; [ -n "${DNS2:-}" ] && echo "nameserver ${DNS2}"; } > "/etc/netns/${NS}/resolv.conf"
-  log "Applied LTE IPv4 settings in ${NS}."
+  log "Applied MAIN and LTE routes in ${NS}."
 
-  # 5) 연결 검증
+  # 5) 연결 안정화 대기
+  log "Waiting 5 seconds for connection to stabilize..."
+  sleep 5
+
+  # 6) 연결 검증
   if verify_connection "${IFACE}"; then
     log "--- LTE connection successfully established and verified. ---"
     exit 0 # 최종 성공

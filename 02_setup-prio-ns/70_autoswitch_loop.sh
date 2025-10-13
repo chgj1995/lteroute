@@ -95,30 +95,26 @@ log watch "Starting monitoring loop..."
 # rp_filter relax (host) - ensure에서 했지만 여기서도 확인
 set_host_rpf_relax
 
+# 스크립트 종료 시 NS의 라우팅 테이블을 초기 상태(MAIN 우선)로 복원
+# '|| true'를 붙여서, 인터페이스가 없는 등의 이유로 명령이 실패해도 스크립트가 에러로 종료되지 않도록 함
 trap '
-  log watch "stop -> restore NS default to MAIN"
-  # MAIN 우선 (metric 10)
-  ip netns exec "'"${NS}"'" ip route replace default dev "'"${VETH_NS}"'" metric 10
-  # LTE 대기 (metric 100)
-  ip netns exec "'"${NS}"'" ip route replace default dev "'"${LTE_IF}"'" metric 100
+  log watch "stop -> restoring NS default to MAIN priority"
+  ip netns exec "'"${NS}"'" ip route change default dev "'"${VETH_NS}"'" metric 10 2>/dev/null || true
+  ip netns exec "'"${NS}"'" ip route change default dev "'"${LTE_IF}"'" metric 100 2>/dev/null || true
   exit 0
 ' INT TERM
 
 # -------- main loop --------
 while true; do
   if check_iface "${VETH_NS}"; then
-    # MAIN이 정상이면 MAIN을 우선으로 설정
+    # MAIN이 정상이면 MAIN을 우선으로 설정 (metric 10)
     log watch "MAIN is healthy. Setting MAIN as primary."
-    # NS default: MAIN 우선 (metric 10)
     ip netns exec "${NS}" ip route change default dev "${VETH_NS}" metric 10
-    # NS default: LTE는 대기 (metric 100)
     ip netns exec "${NS}" ip route change default dev "${LTE_IF}" metric 100
   else
-    # MAIN이 비정상이면 LTE를 우선으로 설정
+    # MAIN이 비정상이면 LTE를 우선으로 설정 (metric 10)
     log watch "MAIN is unhealthy. Setting LTE as primary."
-    # NS default: LTE 우선 (metric 10)
     ip netns exec "${NS}" ip route change default dev "${LTE_IF}" metric 10
-    # NS default: MAIN은 대기 (metric 100)
     ip netns exec "${NS}" ip route change default dev "${VETH_NS}" metric 100
   fi
 
