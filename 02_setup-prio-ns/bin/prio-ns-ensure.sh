@@ -25,8 +25,6 @@ $IPBIN netns exec "${NS}" bash -lc "
   ip addr show dev ${VETH_NS} | grep -q '${NS_IP}' || ip addr add ${NS_IP} dev ${VETH_NS} || true
   ip link set ${VETH_NS} up || true
   ip link set lo up || true
-  # veth-ns를 통해 main-ns로 나가는 기본 경로 설정 (우선순위 10)
-  ip route replace default via ${HOST_IP%/*} dev ${VETH_NS} metric 10 onlink
 "
 
 # 1) ModemManager가 모뎀을 인식할 때까지 대기(최대 20초)
@@ -35,7 +33,7 @@ for _ in $(seq 1 40); do
   sleep 0.5
 done
 MODEM_PATH="$($MM -L 2>/dev/null | sed -n 's/^[[:space:]]*\([/].*Modem\/[0-9]\+\).*/\1/p' | head -n1)"
-[ -n "$MODEM_PATH" ] || { log "No modem found; skip LTE"; exit 0; }
+[ -n "$MODEM_PATH" ] || { log "No modem found; skip LTE setup."; exit 0; }
 log "Modem: ${MODEM_PATH}"
 
 # --- Helper Functions ---
@@ -44,9 +42,7 @@ pick_data_bearer() {
   mapfile -t BEARERS < <($MM -m "$mp" 2>/dev/null | grep -o '/org/freedesktop/ModemManager1/Bearer/[0-9]\+')
   for b in "${BEARERS[@]}"; do
     detail="$($MM -b "$b" 2>/dev/null)"
-    # 1. 연결되어 있는지 확인
     echo "$detail" | grep -q 'connected:[[:space:]]*yes' || continue
-    # 2. IPv4 설정 블록과 주소가 있는지 확인 (가장 확실한 방법)
     if echo "$detail" | grep -q 'IPv4 configuration' && echo "$detail" | grep -q 'address:'; then
       echo "$b"; return 0
     fi
@@ -54,40 +50,10 @@ pick_data_bearer() {
   return 1
 }
 
-verify_connection() {
-  local iface="$1"
-  local gw="$2"
-  local target="8.8.8.8"
-  local result=1
-
-  log "Verifying connection on interface ${iface} via gateway ${gw}..."
-
-  # 대상 IP에 대한 명시적 경로 추가 (라우팅 충돌 방지)
-  ip netns exec "${NS}" ip route add "${target}/32" via "${gw}" dev "${iface}" >/dev/null 2>&1 || true
-
-  for _ in $(seq 1 3); do
-    if ip netns exec "${NS}" ping -c 1 -W 3 "${target}" >/dev/null 2>&1; then
-      log "Connection on ${iface} is VERIFIED."
-      result=0
-      break
-    fi
-    sleep 1
-  done
-
-  if [ "$result" -ne 0 ]; then
-    log "WARN: Connection on ${iface} failed verification."
-  fi
-
-  # 임시 경로 삭제
-  ip netns exec "${NS}" ip route del "${target}/32" via "${gw}" dev "${iface}" >/dev/null 2>&1 || true
-
-  return $result
-}
-
 # --- Main Connection Logic ---
 MAX_RETRIES=2
 for i in $(seq 1 ${MAX_RETRIES}); do
-  log "--- Attempt ${i}/${MAX_RETRIES} to establish and verify LTE connection ---"
+  log "--- Attempt ${i}/${MAX_RETRIES} to set up LTE interface ---"
 
   # 1) 'simple-connect'를 사용하여 연결 보장
   if ! $MM -m "$MODEM_PATH" | grep -q 'state:[[:space:]]*connected'; then
@@ -97,7 +63,6 @@ for i in $(seq 1 ${MAX_RETRIES}); do
       sleep 3
       continue
     fi
-    # 폴링 루프: 최대 15초간 '연결된 데이터 베어러'를 찾음
     log "simple-connect command issued. Polling for a connected data bearer..."
     for _ in $(seq 1 15); do
       FINAL_BEARER_PATH="$(pick_data_bearer "$MODEM_PATH" || true)"
@@ -111,15 +76,14 @@ for i in $(seq 1 ${MAX_RETRIES}); do
     FINAL_BEARER_PATH="$(pick_data_bearer "$MODEM_PATH" || true)"
   fi
 
-  # 2) 최종적으로 사용 가능한 데이터 베어러 확인
   if [ -z "$FINAL_BEARER_PATH" ]; then
       log "WARN: Could not find a usable (connected + IPv4) bearer. Retrying..."
       sleep 3
       continue
   fi
-  log "Using verified data bearer: ${FINAL_BEARER_PATH}"
+  log "Using bearer: ${FINAL_BEARER_PATH}"
 
-  # 3) IPv4/IFACE 정보 파싱 (호환성 보장)
+  # 2) IPv4/IFACE 정보 파싱
   DETAIL="$($MM -b "$FINAL_BEARER_PATH" 2>/dev/null || true)"
   IFACE="$(printf '%s\n' "$DETAIL" | sed -n 's/^[[:space:]]*|[[:space:]]*interface:[[:space:]]*\(.*\)$/\1/p' | head -n1)"
   : "${IFACE:=wwan0}"
@@ -127,19 +91,18 @@ for i in $(seq 1 ${MAX_RETRIES}); do
   BLK="$(printf '%s\n' "$DETAIL" | sed -n '/^  IPv4 configuration /,/^  --------------------------------/p')"
   ADDR="$(printf '%s\n' "$BLK" | sed -n 's/.*address:[[:space:]]*\(.*\)$/\1/p' | head -n1)"
   PFX="$( printf '%s\n' "$BLK" | sed -n 's/.*prefix:[[:space:]]*\(.*\)$/\1/p'  | head -n1)"
-  GW="$(  printf '%s\n' "$BLK" | sed -n 's/.*gateway:[[:space:]]*\(.*\)$/\1/p' | head -n1)"
   MTU="$( printf '%s\n' "$BLK" | sed -n 's/.*mtu:[[:space:]]*\(.*\)$/\1/p'     | head -n1)"
   DNS1="$(printf '%s\n' "$BLK" | sed -n 's/.*dns:[[:space:]]*\([0-9.]\+\).*/\1/p' | head -n1)"
   DNS2="$(printf '%s\n' "$BLK" | sed -n 's/.*dns:[[:space:]]*[0-9.]\+,[[:space:]]*\([0-9.]\+\).*/\1/p' | head -n1)"
-  log "Bearer: ${FINAL_BEARER_PATH} iface=${IFACE} ${ADDR}/${PFX} gw=${GW} dns=${DNS1},${DNS2}"
+  log "Bearer: ${FINAL_BEARER_PATH} iface=${IFACE} ${ADDR}/${PFX} dns=${DNS1},${DNS2}"
 
-  if [ -z "${ADDR:-}" ] || [ -z "${GW:-}" ] || [ -z "${DNS1:-}" ]; then
+  if [ -z "${ADDR:-}" ] || [ -z "${DNS1:-}" ]; then
     log "WARN: Incomplete network info from bearer. Retrying..."
     sleep 3
     continue
   fi
 
-  # 4) 인터페이스를 NS로 이동 및 설정
+  # 3) 인터페이스를 NS로 이동 및 설정 (라우팅 제외)
   if $IPBIN link show "$IFACE" >/dev/null 2>&1; then
     $IPBIN link set "$IFACE" netns "$NS" 2>/dev/null || true
   fi
@@ -148,19 +111,14 @@ for i in $(seq 1 ${MAX_RETRIES}); do
     ip addr add ${ADDR}/${PFX} dev ${IFACE}
     [ -n '${MTU:-}' ] && ip link set ${IFACE} mtu ${MTU}
     ip link set ${IFACE} up
-    ip route replace default via ${GW} dev ${IFACE} metric 100 onlink
   "
   mkdir -p "/etc/netns/${NS}"
   { echo "nameserver ${DNS1}"; [ -n "${DNS2:-}" ] && echo "nameserver ${DNS2}"; } > "/etc/netns/${NS}/resolv.conf"
-  log "Applied LTE IPv4 settings in ${NS}."
+  log "Applied LTE IPv4 settings in ${NS} (no routes)."
 
-  # 5) 연결 검증
-  if verify_connection "${IFACE}" "${GW}"; then
-    log "--- LTE connection successfully established and verified. ---"
-    exit 0 # 최종 성공
-  fi
-  log "WARN: Verification failed. Will retry if attempts remain."
+  log "--- LTE interface setup complete. ---"
+  exit 0 # 성공
 done
 
-log "err" "Failed to establish a verified LTE connection after ${MAX_RETRIES} attempts."
+log "err" "Failed to set up LTE interface after ${MAX_RETRIES} attempts."
 exit 1
