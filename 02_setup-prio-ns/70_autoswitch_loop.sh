@@ -71,11 +71,22 @@ set_host_rpf_relax() {
   sysctl -w net.ipv4.conf.all.rp_filter=2          >/dev/null 2>&1 || true
 }
 
+host_route_ok=true # Assume route exists at start
+
 check_iface() {  # $1 = IFACE in netns (VETH_NS)
   # 1. 호스트에 기본 인터넷 경로가 있는지 먼저 확인
   if ! ip route show default | grep -q '.*'; then
-    log watch "Host default route not found. Assuming main connection is down."
+    if [ "$host_route_ok" = true ]; then
+      log watch "Host default route not found. Assuming main connection is down."
+      host_route_ok=false
+    fi
     return 1
+  fi
+
+  # 호스트 경로가 복구되었으면 로그를 남김
+  if [ "$host_route_ok" = false ]; then
+    log watch "Host default route has been restored."
+    host_route_ok=true
   fi
 
   # 2. 호스트 경로가 있다면, 실제 핑 테스트로 연결성 검증

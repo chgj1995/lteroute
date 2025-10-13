@@ -8,7 +8,7 @@ need_root
 
 echo "== setup prio-ns install =="
 
-# 1) 단계 스크립트 실행(존재할 때만)
+# 1) 단계 스크립트 실행(존재할 때만) - 설치 시점에만 필요
 run_glob() {
   local step="$1" matched=0 f
   for f in "$DIR/${step}_"*.sh; do
@@ -22,10 +22,11 @@ run_glob() {
 # 10(ns/veth 생성), 60(호스트 NAT)만 실행
 for s in 10 60; do run_glob "$s"; done
 
-# 2) ensure 스크립트 배포(실행권한/리눅스 개행 보장)
+# 2) ensure 및 prepare 스크립트 배포
 install -D -m 0755 "$DIR/bin/prio-ns-ensure.sh" /usr/local/sbin/prio-ns-ensure.sh
-sed -i 's/\r$//' /usr/local/sbin/prio-ns-ensure.sh
-sed -i '1s/^\xEF\xBB\xBF//' /usr/local/sbin/prio-ns-ensure.sh
+install -D -m 0755 "$DIR/bin/prepare-prio-ns.sh" /usr/local/sbin/prepare-prio-ns.sh
+sed -i 's/\r$//' /usr/local/sbin/prio-ns-ensure.sh /usr/local/sbin/prepare-prio-ns.sh
+sed -i '1s/^\xEF\xBB\xBF//' /usr/local/sbin/prio-ns-ensure.sh /usr/local/sbin/prepare-prio-ns.sh
 
 # 3) autoswitch 유닛(마스크 해제 → 재배포 → enable --now)
 UNIT="/etc/systemd/system/prio-ns-autoswitch.service"
@@ -33,16 +34,13 @@ systemctl unmask prio-ns-autoswitch.service >/dev/null 2>&1 || true
 cat >"$UNIT" <<EOF
 [Unit]
 Description=prio_ns default route autoswitch (main <-> LTE)
-After=turn-on-lte.service ModemManager.service network-online.target
+After=network-online.target ModemManager.service tailscale-route-restore.service
 Wants=network-online.target ModemManager.service
-Before=tailscaled.service tailscale-route-restore.service
 
 [Service]
 Type=simple
 WorkingDirectory=${DIR}
-ExecStartPre=-/usr/bin/env bash -c 'echo "Pre-start: creating namespace..." && "${DIR}/10_ns_create.sh"'
-ExecStartPre=-/usr/bin/env bash -c 'echo "Pre-start: setting up host NAT..." && "${DIR}/60_nat_forward.sh"'
-ExecStartPre=-/usr/local/sbin/prio-ns-ensure.sh
+ExecStartPre=/usr/local/sbin/prepare-prio-ns.sh
 ExecStart=/usr/bin/env bash ${DIR}/70_autoswitch_loop.sh
 Restart=always
 RestartSec=2
