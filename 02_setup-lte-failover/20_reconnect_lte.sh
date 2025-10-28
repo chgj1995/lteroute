@@ -46,7 +46,7 @@ verify_connection() {
   return $result
 }
 
-# --- Main Connection Logic from prio-ns-ensure.sh ---
+# --- Main Connection Logic ---
 MAX_RETRIES=2
 for i in $(seq 1 ${MAX_RETRIES}); do
   log lte-reconnect "--- Attempt ${i}/${MAX_RETRIES} ---"
@@ -73,40 +73,61 @@ for i in $(seq 1 ${MAX_RETRIES}); do
 
   # 3) 최종 베어러 확인
   if [ -z "$FINAL_BEARER_PATH" ]; then
-      log lte-reconnect "WARN: Could not find a usable bearer after connect attempt. Retrying..."
+      log lte-reconnect "WARN: Could not find a usable bearer. Retrying..."
       sleep 3; continue
   fi
   log lte-reconnect "Using data bearer: ${FINAL_BEARER_PATH}"
 
-  # 4) IPv4/IFACE 정보 파싱 (호환성 보장)
-  read -r ADDR PFX GW MTU DNS1 DNS2 < <(parse_bearer_ipv4 "$FINAL_BEARER_PATH")
-  IFACE="${LTE_IF}"
+  # 4) IPv4/IFACE 정보 파싱 (기존 로직 복원)
+  DETAIL="$(mmcli -b "$FINAL_BEARER_PATH")"
+  IFACE="$(printf '%s\n' "$DETAIL" | sed -n 's/.*interface:[[:space:]]*\([^ ]\+\).*/\1/p' | head -n1)"
+  : "${IFACE:=${LTE_IF:-wwan0}}" # 파싱 실패 시 기본값 사용
+
+  BLK="$(printf '%s\n' "$DETAIL" | sed -n '/^  IPv4 configuration /,/^  --------------------------------/p')"
+  ADDR="$(printf '%s\n' "$BLK" | sed -n 's/.*address:[[:space:]]*\([0-9.]\+\).*/\1/p' | head -n1)"
+  PFX="$( printf '%s\n' "$BLK" | sed -n 's/.*prefix:[[:space:]]*\([0-9]\+\).*/\1/p'  | head -n1)"
+  GW="$(  printf '%s\n' "$BLK" | sed -n 's/.*gateway:[[:space:]]*\(.*\)$/\1/p' | head -n1)"
+  MTU="$( printf '%s\n' "$BLK" | sed -n 's/.*mtu:[[:space:]]*\(.*\)$/\1/p'     | head -n1)"
+  DNS_LIST="$(printf '%s\n' "$BLK" | sed -n 's/.*dns:[[:space:]]*\([0-9.,[:space:]]\+\).*/\1/p' | head -n1 | tr -d ' ' | tr ',' ' ')"
+  read -r DNS1 DNS2 <<< "$DNS_LIST"
 
   log lte-reconnect "Bearer info: iface=${IFACE} ${ADDR}/${PFX} gw=${GW} dns=${DNS1},${DNS2}"
   if [ -z "${ADDR:-}" ] || [ -z "${GW:-}" ] || [ -z "${DNS1:-}" ]; then
-    log lte-reconnect "WARN: Incomplete network info from bearer. Retrying..."
+    log lte-reconnect "WARN: Incomplete network info. Retrying..."
     sleep 3; continue
   fi
 
-  # 5) 인터페이스 설정 (메인 네임스페이스)
+  # 5) 인터페이스가 생성될 때까지 대기 (경쟁 상태 방지)
+  log lte-reconnect "Waiting for interface ${IFACE} to appear..."
+  for _ in $(seq 1 20); do
+    if ip link show "${IFACE}" >/dev/null 2>&1; then break; fi
+    sleep 0.5
+  done
+  if ! ip link show "${IFACE}" >/dev/null 2>&1; then
+    log lte-reconnect "err" "Interface ${IFACE} did not appear in time. Retrying..."
+    sleep 3; continue
+  fi
+  log lte-reconnect "Interface ${IFACE} found."
+
+  # 6) 인터페이스 설정 (메인 네임스페이스)
   ip link set "${IFACE}" down 2>/dev/null || true
   ip addr flush dev "${IFACE}" 2>/dev/null || true
   ip addr add "${ADDR}/${PFX}" dev "${IFACE}"
   [ -n "${MTU:-}" ] && ip link set "${IFACE}" mtu "${MTU}"
   ip link set "${IFACE}" up
 
-  # 6) 라우팅 설정 (후순위 metric)
+  # 7) 라우팅 설정 (후순위 metric)
   log lte-reconnect "Adding standby default route via ${GW} with metric 100"
   ip route replace default via "${GW}" dev "${IFACE}" metric 100 onlink
 
-  # 7) DNS 라우팅 설정
+  # 8) DNS 라우팅 설정
   log lte-reconnect "Adding routes for DNS servers ${DNS1}, ${DNS2}"
   ip route add "${DNS1}/32" via "${GW}" >/dev/null 2>&1 || true
   [ -n "${DNS2:-}" ] && ip route add "${DNS2}/32" via "${GW}" >/dev/null 2>&1 || true
 
   log lte-reconnect "Applied LTE IPv4 settings in main namespace."
 
-  # 8) 연결 검증
+  # 9) 연결 검증
   if verify_connection "${IFACE}" "${GW}"; then
     log lte-reconnect "--- LTE connection successfully established. ---"
     exit 0 # 최종 성공

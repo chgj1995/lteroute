@@ -21,26 +21,3 @@ exists_link(){ ip link show "$1" >/dev/null 2>&1; }
 # mmcli helpers
 get_modem_path(){ mmcli -L | awk '/ModemManager1\/Modem/ {print $1; exit}' || true; }
 get_bearer_path(){ local m="$1"; mmcli -m "$m" | grep -o '/org/freedesktop/ModemManager1/Bearer/[0-9]\+' | tail -n1 || true; }
-
-# stdout: "ADDR PFX GW MTU DNS1 DNS2"
-parse_bearer_ipv4(){
-  local b="$1"
-  # IPv4 configuration 블록만 추출
-  local blk
-  blk="$(LC_ALL=C mmcli -b "$b" 2>/dev/null \
-        | sed -n '/^  IPv4 configuration[[:space:]]*|/,/^  --------------------------------/p')"
-
-  # 각 필드 파싱
-  local a p g m dlist d1 d2
-  a="$(echo "$blk" | sed -n 's/.*address:[[:space:]]*\([0-9.]\+\).*/\1/p' | head -n1)"
-  p="$(echo "$blk" | sed -n 's/.*prefix:[[:space:]]*\([0-9]\+\).*/\1/p' | head -n1)"
-  g="$(echo "$blk" | sed -n 's/.*gateway:[[:space:]]*\([0-9.]\+\).*/\1/p' | head -n1)"
-  m="$(echo "$blk" | sed -n 's/.*mtu:[[:space:]]*\([0-9]\+\).*/\1/p' | head -n1)"
-  dlist="$(echo "$blk" | sed -n 's/.*dns:[[:space:]]*\([0-9.,[:space:]]\+\).*/\1/p' | head -n1 \
-           | tr -d ' ' | tr ',' ' ')"
-
-  set -- $dlist
-  d1="${1:-}"; d2="${2:-}"
-
-  echo "${a:-} ${p:-} ${g:-} ${m:-} ${d1:-} ${d2:-}"
-}
