@@ -12,7 +12,6 @@ fi
 log setup "선별적 경로 적용 (${CONF_FILE})"
 require_prio_ns
 
-# --- 방어 코드: prio_ns에 기본 경로가 없으면 추가 ---
 if ! ip netns exec "${NS}" ip route show default | grep -q .; then
     log setup "WARN: prio_ns에 기본 경로가 없어 추가합니다. (via ${HOST_VETH_IP})"
     ip netns exec "${NS}" ip route add default via "${HOST_VETH_IP}" dev "${VETH_NS}" metric 10
@@ -30,16 +29,13 @@ get_clean_entry() {
     fi
 }
 
-# prio_ns 안에서 getent ahosts를 사용하여 도메인 해석
 resolve_entry() {
     local entry="$1"
     ip netns exec "${NS}" getent ahosts "$entry" | awk '{print $1; exit}'
 }
 
-# --- main logic ---
 log setup "1단계: DNS 서버 설정 및 경로 추가"
 DNS_SERVERS=()
-# < <(...) 프로세스 치환을 사용하여 서브쉘 문제 해결
 while read -r line; do
     entry=$(get_clean_entry "$line")
     if [ -n "$entry" ]; then
@@ -51,7 +47,6 @@ done < <(sed -n '/\[dns_servers\]/,/\[.*\]/p' "$CONF_FILE" | grep -v '\[.*\]')
 
 if [ ${#DNS_SERVERS[@]} -gt 0 ]; then
     log setup "  - prio_ns에 DNS 서버 설정 적용: ${DNS_SERVERS[*]}"
-    # prio_ns의 resolv.conf를 동적으로 생성
     mkdir -p "/etc/netns/${NS}"
     (printf "nameserver %s\n" "${DNS_SERVERS[@]}") | tee "/etc/netns/${NS}/resolv.conf" > /dev/null
 else

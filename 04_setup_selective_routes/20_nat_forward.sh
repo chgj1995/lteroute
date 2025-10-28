@@ -4,7 +4,6 @@ set -Eeuo pipefail
 log setup "netns: NAT & FORWARD rules ( ${VETH_NS} <-> ${TS_IF} )"
 
 require_prio_ns
-require_tailscale_in_ns
 ip netns exec "${NS}" bash -c "
   iptables -C FORWARD -i ${VETH_NS} -o ${TS_IF} -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || \
     iptables -A FORWARD -i ${VETH_NS} -o ${TS_IF} -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT

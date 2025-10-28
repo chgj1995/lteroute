@@ -14,8 +14,8 @@ echo "  - /etc/prio-ns/selective_routes.conf copied"
 
 run(){ local f="$1"; echo "==> $(basename "$f")"; bash "$f"; }
 
-# 실행할 스크립트 목록 정의
-steps=(10_host_ts_route.sh 20_ns_rpf.sh 30_nat_forward.sh 35_nat_forward_wwan.sh 40_dnat_app.sh)
+# 실행할 스크립트 목록 재정의
+steps=(10_ns_rpf.sh 20_nat_forward.sh 30_nat_forward_wwan.sh 40_dnat_app.sh 50_apply_routes.sh)
 for f in "${steps[@]}"; do run "$DIR/$f"; done
 
 # --- systemd 서비스 재구성 ---
