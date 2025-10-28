@@ -52,6 +52,9 @@ for i in $(seq 1 ${MAX_RETRIES}); do
   log lte-reconnect "--- Attempt ${i}/${MAX_RETRIES} ---"
 
   # 1) 'simple-connect'를 사용하여 연결 보장
+  log lte-reconnect "--- Dumping modem state before connect check ---"
+  mmcli -m "$MODEM_PATH"
+  log lte-reconnect "---------------------------------------------"
   if ! mmcli -m "$MODEM_PATH" | grep -q 'state:[[:space:]]*connected'; then
     log lte-reconnect "Modem not connected. Running simple-connect..."
     if ! mmcli -m "$MODEM_PATH" --simple-connect="apn=${APN}" >/dev/null; then
