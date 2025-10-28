@@ -64,6 +64,40 @@ verify_connection() {
   return $ok
 }
 
+# --- NetworkManager를 통한 per-connection DNS 설정 ---
+set_nm_dns() {
+  local iface="$1" dns1="$2" dns2="$3"
+
+  # 1) iface에 매핑된 활성 Connection 이름을 찾음
+  local conn
+  conn="$(nmcli -t -f NAME,DEVICE c show --active | awk -F: -v d="$iface" '$2==d{print $1; exit}')"
+
+  # 2) 활성 Connection이 없으면, 해당 iface용 임시 Connection을 생성(관리 대상으로 편입)
+  if [ -z "$conn" ]; then
+    conn="lte-${iface}-dns"
+    # QMI/MBIM라도 DNS만 잡을 목적이면 ethernet 타입으로 만들어도 됨(IPv4 주소는 비활성)
+    nmcli con add type ethernet ifname "$iface" con-name "$conn" \
+      ipv4.method disabled ipv6.method ignore || true
+  fi
+
+  # 3) DNS 지정 + 자동 DNS 무시
+  #    - 여러 주소는 공백으로 구분
+  local dns="$dns1"
+  [ -n "$dns2" ] && dns="$dns1 $dns2"
+
+  nmcli con mod "$conn" \
+    ipv4.dns "$dns" \
+    ipv4.ignore-auto-dns yes \
+    ipv4.dns-search "" \
+    connection.mdns no
+
+  # (선택) DNS 질의 동작 튜닝
+  nmcli con mod "$conn" ipv4.dns-options "rotate timeout:1 attempts:1"
+
+  # 4) 변경 적용
+  nmcli con up "$conn" || nmcli con reload
+}
+
 need_root
 
 MAX_RETRIES=2
@@ -115,10 +149,8 @@ for i in $(seq 1 ${MAX_RETRIES}); do
   ${IPBIN} route replace "${GW}" dev "${IFACE}" scope link proto static || true
 
   # /run/resolvconf 경로 활용(있으면)
-  mkdir -p /run/resolvconf/resolv.conf.d 2>/dev/null || true
-  echo "nameserver ${DNS1}" > /run/resolvconf/resolv.conf.d/lte || true
-  [ -n "${DNS2}" ] && echo "nameserver ${DNS2}" >> /run/resolvconf/resolv.conf.d/lte || true
-  resolvconf -u 2>/dev/null || true
+  # 호출: IFACE/DNS1/DNS2는 위에서 이미 구한 값 사용
+  set_nm_dns "${IFACE}" "${DNS1}" "${DNS2}"
 
   if verify_connection "${IFACE}" "${GW}"; then
     log "--- LTE connection verified. Proceed to allow-list routing ---"
