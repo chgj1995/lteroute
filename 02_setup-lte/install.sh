@@ -2,13 +2,12 @@
 set -Eeuo pipefail
 
 # ===== paths / names =====
-UNIT_NAME="lte-ensure.service"
+UNIT_NAME="lte-failover.service"
 UNIT_PATH="/etc/systemd/system/${UNIT_NAME}"
-BIN_DST="/usr/local/sbin/lte-ensure.sh"
-CONF_FILE="/etc/lte_pbr.allow"
+BIN_DST="/usr/local/sbin/lte-failover.sh"
 
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_BIN="${SRC_DIR}/lte-ensure.sh"
+SRC_BIN="${SRC_DIR}/lte-failover.sh"
 
 log() { echo "[install] $*" >&2; }
 need_root() { [ "$EUID" -eq 0 ] || { echo "root 권한 필요 (sudo로 실행)"; exit 1; }; }
@@ -24,42 +23,18 @@ install -d -m 0755 /usr/local/sbin
 install -m 0755 "${SRC_BIN}" "${BIN_DST}"
 log "배치됨: ${BIN_DST}"
 
-# 2) allow 파일 준비(없으면 생성)
-if [ ! -f "${CONF_FILE}" ]; then
-    cat > "${CONF_FILE}" <<'EOF'
-# lte-ensure 허용 대상(.allow)
-#
-# 이 파일에 명시된 IP 주소 또는 도메인만 LTE를 통한 외부 통신이 허용됩니다.
-# (DNS 설정은 ModemManager를 통해 자동으로 구성되므로, 이 파일에 dns 항목을 추가할 필요 없습니다.)
-#
-# 지원 형태:
-#   - 단일 IP: 8.8.8.8
-#   - CIDR 범위: 1.1.1.0/24
-#   - 도메인: example.com
-#
-# 예시:
-# 8.8.8.8
-# 1.1.1.0/24
-# example.com
-EOF
-    chmod 0644 "${CONF_FILE}"
-    log "생성됨: ${CONF_FILE}"
-else
-    log "존재함: ${CONF_FILE}"
-fi
-
-# 3) systemd 유닛 작성
+# 2) systemd 유닛 작성
 #  - 네트워크가 '진짜' 올라오고(ModemManager/NM 구성 후) 실행되도록 After/Wants 보강
 #  - Type=simple + Restart=on-failure (oneshot + Restart 금지 이슈 회피)
 cat > "${UNIT_PATH}" <<'EOF'
 [Unit]
-Description=Ensure LTE allow-list PBR routes after network is fully up
+Description=Setup LTE failover route with high metric
 After=network-online.target NetworkManager.service NetworkManager-wait-online.service ModemManager.service
 Wants=network-online.target NetworkManager-wait-online.service ModemManager.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/sbin/lte-ensure.sh
+ExecStart=/usr/local/sbin/lte-failover.sh
 Restart=on-failure
 RestartSec=8
 

@@ -1,30 +1,13 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SERVICE_NAME="lte-ensure.service"
+SERVICE_NAME="lte-failover.service"
 UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}"
-ADDED_LIST="/run/lte-pbr.dest"
-IPBIN="/bin/ip"
+BIN_DST="/usr/local/sbin/lte-failover.sh"
 
-echo "[uninstall] 시작: 라우트 정리 → 서비스 제거 순서로 진행합니다."
+echo "[uninstall] 시작: 서비스 중지/삭제 → 바이너리 제거 순으로 진행합니다."
 
-# (A) 라우트 제거
-if [ -s "$ADDED_LIST" ]; then
-  echo "[uninstall] 허용 라우트 제거 중..."
-  tac "$ADDED_LIST" | while read -r dst; do
-    if [[ "$dst" == */* ]]; then
-      $IPBIN route del "$dst" 2>/dev/null || true
-    else
-      $IPBIN route del "${dst}/32" 2>/dev/null || true
-    fi
-  done
-  rm -f "$ADDED_LIST"
-  echo "[uninstall] 라우트 제거 완료."
-else
-  echo "[uninstall] 제거할 라우트 목록이 없습니다: $ADDED_LIST"
-fi
-
-# (B) 서비스 정리
+# (A) 서비스 정리
 if systemctl is-active --quiet "${SERVICE_NAME}"; then
   echo "[uninstall] 서비스 중지 중..."
   systemctl stop "${SERVICE_NAME}" || true
@@ -50,4 +33,16 @@ fi
 echo "[uninstall] systemd 데몬 리로드..."
 systemctl daemon-reload
 
-echo "[uninstall] 완료. 필요 시 'ip route' 로 잔여 라우트 여부를 확인하세요."
+# (B) 바이너리 및 설정 파일 제거
+if [ -f "$BIN_DST" ]; then
+  echo "[uninstall] 바이너리 삭제: $BIN_DST"
+  rm -f "$BIN_DST"
+fi
+
+# (C) 구버전 PBR 설정 파일(.allow)이 있다면 삭제
+if [ -f "/etc/lte_pbr.allow" ]; then
+  echo "[uninstall] 구버전 PBR 설정 파일 삭제: /etc/lte_pbr.allow"
+  rm -f "/etc/lte_pbr.allow"
+fi
+
+echo "[uninstall] 완료. 'ip route' 로 wwan 인터페이스의 기본 경로가 삭제되었는지 확인하세요."
