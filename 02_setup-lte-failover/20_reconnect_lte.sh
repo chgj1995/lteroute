@@ -46,20 +46,17 @@ verify_connection() {
   return $result
 }
 
-# --- Main Connection Logic (Replicated from prio-ns-ensure.sh) ---
+# --- Main Connection Logic ---
 MAX_RETRIES=2
 for i in $(seq 1 ${MAX_RETRIES}); do
   log lte-reconnect "--- Attempt ${i}/${MAX_RETRIES} ---"
 
-  # 1) 모뎀 전체 상태('state') 확인 (기존 로직 복원)
   MODEM_STATUS_OUTPUT="$(mmcli -m "$MODEM_PATH")"
   if ! echo "$MODEM_STATUS_OUTPUT" | grep -q 'state:[[:space:]]*connected'; then
     log lte-reconnect "Modem not in 'connected' state. Attempting simple-connect..."
-    # 'TooMany' 오류 방지를 위해 에러 출력 무시
     if ! mmcli -m "$MODEM_PATH" --simple-connect="apn=${APN}" >/dev/null 2>&1; then
       log lte-reconnect "simple-connect command failed or modem already connecting. Polling for bearer..."
     fi
-    # 폴링 루프: 'simple-connect' 요청 후, 완전히 준비된 베어러를 기다림 (핵심 로직)
     log lte-reconnect "Polling for a connected data bearer for up to 15s..."
     FINAL_BEARER_PATH=""
     for _ in $(seq 1 15); do
@@ -72,24 +69,23 @@ for i in $(seq 1 ${MAX_RETRIES}); do
     FINAL_BEARER_PATH="$(pick_data_bearer "$MODEM_PATH" || true)"
   fi
 
-  # 2) 최종 베어러 확인
   if [ -z "$FINAL_BEARER_PATH" ]; then
       log lte-reconnect "WARN: Could not find a usable bearer. Retrying..."
       sleep 3; continue
   fi
   log lte-reconnect "Using data bearer: ${FINAL_BEARER_PATH}"
 
-  # 3) IPv4/IFACE 정보 파싱
-  DETAIL="$(mmcli -b "$FINAL_BEARER_PATH")"
-  IFACE="$(printf '%s\n' "$DETAIL" | sed -n 's/.*interface:[[:space:]]*\([^ ]\+\).*/\1/p' | head -n1)"
+  # 3) IPv4/IFACE 정보 파싱 (기존 안정적인 정규식으로 완벽 복원)
+  DETAIL="$(mmcli -b "$FINAL_BEARER_PATH" 2>/dev/null || true)"
+  IFACE="$(printf '%s\n' "$DETAIL" | sed -n 's/^[[:space:]]*|[[:space:]]*interface:[[:space:]]*\(.*\)$/\1/p' | head -n1)"
   : "${IFACE:=${LTE_IF:-wwan0}}"
 
   BLK="$(printf '%s\n' "$DETAIL" | sed -n '/^  IPv4 configuration /,/^  --------------------------------/p')"
-  ADDR="$(printf '%s\n' "$BLK" | sed -n 's/.*address:[[:space:]]*\([0-9.]\+\).*/\1/p' | head -n1)"
-  PFX="$( printf '%s\n' "$BLK" | sed -n 's/.*prefix:[[:space:]]*\([0-9]\+\).*/\1/p'  | head -n1)"
+  ADDR="$(printf '%s\n' "$BLK" | sed -n 's/.*address:[[:space:]]*\(.*\)$/\1/p' | head -n1)"
+  PFX="$( printf '%s\n' "$BLK" | sed -n 's/.*prefix:[[:space:]]*\(.*\)$/\1/p'  | head -n1)"
   GW="$(  printf '%s\n' "$BLK" | sed -n 's/.*gateway:[[:space:]]*\(.*\)$/\1/p' | head -n1)"
   MTU="$( printf '%s\n' "$BLK" | sed -n 's/.*mtu:[[:space:]]*\(.*\)$/\1/p'     | head -n1)"
-  DNS_LIST="$(printf '%s\n' "$BLK" | sed -n 's/.*dns:[[:space:]]*\([0-9.,[:space:]]\+\).*/\1/p' | head -n1 | tr -d ' ' | tr ',' ' ')"
+  DNS_LIST="$(printf '%s\n' "$BLK" | sed -n 's/.*dns:[[:space:]]*\(.*\)$/\1/p' | head -n1 | tr -d ' ' | tr ',' ' ')"
   read -r DNS1 DNS2 <<< "$DNS_LIST"
 
   log lte-reconnect "Bearer info: iface=${IFACE} ${ADDR}/${PFX} gw=${GW} dns=${DNS1},${DNS2}"
