@@ -28,16 +28,19 @@ log "배치됨: ${BIN_DST}"
 if [ ! -f "${CONF_FILE}" ]; then
     cat > "${CONF_FILE}" <<'EOF'
 # lte-ensure 허용 대상(.allow)
-# 빈 칸/주석 허용, 다음 형태 지원:
-#   - 단일 IP 또는 CIDR: 8.8.8.8, 1.1.1.0/24
-#   - 도메인: example.com
-#   - dns: 네임서버IP(들)      예) dns: 1.1.1.1 8.8.8.8
 #
-# 예시)
+# 이 파일에 명시된 IP 주소 또는 도메인만 LTE를 통한 외부 통신이 허용됩니다.
+# (DNS 설정은 ModemManager를 통해 자동으로 구성되므로, 이 파일에 dns 항목을 추가할 필요 없습니다.)
+#
+# 지원 형태:
+#   - 단일 IP: 8.8.8.8
+#   - CIDR 범위: 1.1.1.0/24
+#   - 도메인: example.com
+#
+# 예시:
 # 8.8.8.8
 # 1.1.1.0/24
 # example.com
-# dns: 1.1.1.1 8.8.8.8
 EOF
     chmod 0644 "${CONF_FILE}"
     log "생성됨: ${CONF_FILE}"

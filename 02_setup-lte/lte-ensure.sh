@@ -114,20 +114,19 @@ for i in $(seq 1 ${MAX_RETRIES}); do
   ${IPBIN} link set "${IFACE}" up
   ${IPBIN} route replace "${GW}" dev "${IFACE}" scope link proto static || true
 
-  # (중요) NetworkManager가 DNS 설정을 덮어쓰기 전에, mmcli로 받은 통신사 DNS 서버로의 경로를 먼저 확보합니다.
+  # (중요) systemd-resolved가 통신사 DNS 서버와 통신할 수 있도록 경로를 먼저 확보합니다.
   log "Ensuring routes to ISP DNS servers: ${DNS1} ${DNS2:-}"
   ${IPBIN} route replace "${DNS1}/32" via "${GW}" dev "${IFACE}" proto static metric 50
   if [ -n "${DNS2:-}" ]; then
     ${IPBIN} route replace "${DNS2}/32" via "${GW}" dev "${IFACE}" proto static metric 50
   fi
 
-  # NetworkManager(nmcli)를 통해 시스템 DNS를 통신사 DNS로 영구 설정합니다.
-  DNS_SERVERS="${DNS1}"
-  [ -n "${DNS2:-}" ] && DNS_SERVERS="${DNS1} ${DNS2}"
-  log "Applying ISP DNS via nmcli for profile '${IFACE}': ${DNS_SERVERS}"
-  nmcli connection modify "${IFACE}" ipv4.ignore-auto-dns yes
-  nmcli connection modify "${IFACE}" ipv4.dns "${DNS_SERVERS}"
-  nmcli connection up "${IFACE}" >/dev/null
+  # systemd-resolve를 통해 wwan0 인터페이스의 DNS 설정을 명시적으로 지정합니다.
+  DNS_ARGS=""
+  [ -n "${DNS1:-}" ] && DNS_ARGS="${DNS_ARGS} --set-dns=${DNS1}"
+  [ -n "${DNS2:-}" ] && DNS_ARGS="${DNS_ARGS} --set-dns=${DNS2}"
+  log "Applying DNS for ${IFACE} via systemd-resolve: ${DNS1} ${DNS2:-}"
+  systemd-resolve --interface="${IFACE}" ${DNS_ARGS} --set-domain=~.
 
   if verify_connection "${IFACE}" "${GW}"; then
     log "--- LTE connection verified. Proceed to allow-list routing ---"
