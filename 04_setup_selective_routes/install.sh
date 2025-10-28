@@ -7,54 +7,29 @@ as_root
 
 echo "== selective-routes install =="
 
-# 설정 파일 복사
+# --- 설정 파일 및 스크립트 복사 ---
+echo "==> installing files..."
 install -d -m 0755 /etc/prio-ns
 install -m 0644 "${DIR}/selective_routes.conf" /etc/prio-ns/
 echo "  - /etc/prio-ns/selective_routes.conf copied"
 
-run(){ local f="$1"; echo "==> $(basename "$f")"; bash "$f"; }
+install -d -m 0755 /usr/local/sbin
+install -m 0755 "${DIR}/manage_selective_routes.sh" /usr/local/sbin/
+echo "  - /usr/local/sbin/manage_selective_routes.sh copied"
 
-# 실행할 스크립트 목록 재정의
-steps=(10_ns_rpf.sh 20_nat_forward.sh 30_nat_forward_wwan.sh 40_dnat_app.sh 50_apply_routes.sh)
-for f in "${steps[@]}"; do run "$DIR/$f"; done
-
-# --- systemd 서비스 재구성 ---
-OLD_UNIT="tailscale-route-restore.service"
+# --- 기존 systemd 서비스 정리 ---
+OLD_UNIT="selective-routes.service"
 if systemctl list-unit-files | grep -q "$OLD_UNIT"; then
     echo "==> removing old ${OLD_UNIT}"
     systemctl disable --now "$OLD_UNIT" >/dev/null 2>&1 || true
     rm -f "/etc/systemd/system/${OLD_UNIT}"
+    systemctl daemon-reload
 fi
 
-NEW_UNIT="/etc/systemd/system/selective-routes.service"
-echo "==> installing systemd service: ${NEW_UNIT}"
-
-EXEC_COMMANDS=""
-for f in "${steps[@]}"; do
-    EXEC_COMMANDS+="/usr/bin/env bash ${DIR}/$f && "
-done
-EXEC_COMMANDS=${EXEC_COMMANDS%** && }
-
-cat > "$NEW_UNIT" <<EOF
-[Unit]
-Description=Apply selective routes for prio_ns from config file at boot
-After=network-online.target tailscaled.service prio-ns-setup.service
-Wants=network-online.target
-BindsTo=tailscaled.service prio-ns-setup.service
-
-[Service]
-Type=oneshot
-WorkingDirectory=${DIR}
-ExecStart=/bin/sh -c "${EXEC_COMMANDS}"
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-chmod 0644 "$NEW_UNIT"
-systemctl daemon-reload
-systemctl enable --now selective-routes.service
-systemctl --no-pager status selective-routes.service || true
+# --- 나머지 설정 스크립트 실행 (기반 설정) ---
+# manage_selective_routes.sh는 autoswitch에 의해 호출되므로 여기서는 실행하지 않음
+run(){ local f="$1"; echo "==> $(basename "$f")"; bash "$f"; }
+steps=(10_ns_rpf.sh 20_nat_forward.sh 30_nat_forward_wwan.sh 40_dnat_app.sh)
+for f in "${steps[@]}"; do run "$DIR/$f"; done
 
 echo "== done =="
