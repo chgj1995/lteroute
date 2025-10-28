@@ -16,3 +16,4 @@ ns_link_exists "${VETH_NS}" || die "missing ${VETH_NS} in ${NS}"
 ip netns exec "${NS}" ip addr show dev "${VETH_NS}" | grep -q "${NS_IP_CIDR%/*}" || \
   ip netns exec "${NS}" ip addr add "${NS_IP_CIDR}" dev "${VETH_NS}"
 ip netns exec "${NS}" ip link set "${VETH_NS}" up
+ip netns exec "${NS}" ip route add default via "${HOST_VETH_IP}" dev "${VETH_NS}" metric 10
