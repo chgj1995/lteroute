@@ -20,7 +20,7 @@ Wants=prio-ns-autoswitch.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/ip netns exec prio_ns $NTPDATE_PATH -4 -s $NTP_SERVER
+ExecStart=/bin/ip netns exec prio_ns $NTPDATE_PATH -4 -s $NTP_SERVER
 UNIT
 
 # 2) .timer 파일 생성 (매 시간 실행)
