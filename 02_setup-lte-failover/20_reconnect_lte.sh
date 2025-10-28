@@ -51,12 +51,12 @@ MAX_RETRIES=2
 for i in $(seq 1 ${MAX_RETRIES}); do
   log lte-reconnect "--- Attempt ${i}/${MAX_RETRIES} ---"
 
-  # 1) 'simple-connect'를 사용하여 연결 보장
-  log lte-reconnect "--- Dumping modem state before connect check ---"
-  mmcli -m "$MODEM_PATH"
-  log lte-reconnect "---------------------------------------------"
-  if ! mmcli -m "$MODEM_PATH" | grep -q 'state:[[:space:]]*connected'; then
-    log lte-reconnect "Modem not connected. Running simple-connect..."
+  # 1) 먼저 사용 가능한 데이터 베어러가 있는지 확인 (가장 안정적인 방법)
+  FINAL_BEARER_PATH="$(pick_data_bearer "$MODEM_PATH" || true)"
+
+  # 2) 베어러가 없을 때만 'simple-connect' 실행
+  if [ -z "$FINAL_BEARER_PATH" ]; then
+    log lte-reconnect "No active bearer found. Running simple-connect..."
     if ! mmcli -m "$MODEM_PATH" --simple-connect="apn=${APN}" >/dev/null; then
       log lte-reconnect "WARN: simple-connect failed. Retrying..."
       sleep 3; continue
@@ -68,18 +68,17 @@ for i in $(seq 1 ${MAX_RETRIES}); do
       sleep 1
     done
   else
-    log lte-reconnect "Modem already in 'connected' state."
-    FINAL_BEARER_PATH="$(pick_data_bearer "$MODEM_PATH" || true)"
+      log lte-reconnect "Found active bearer without new connection."
   fi
 
-  # 2) 최종 베어러 확인
+  # 3) 최종 베어러 확인
   if [ -z "$FINAL_BEARER_PATH" ]; then
-      log lte-reconnect "WARN: Could not find a usable bearer. Retrying..."
+      log lte-reconnect "WARN: Could not find a usable bearer after connect attempt. Retrying..."
       sleep 3; continue
   fi
   log lte-reconnect "Using data bearer: ${FINAL_BEARER_PATH}"
 
-  # 3) IPv4/IFACE 정보 파싱 (호환성 보장)
+  # 4) IPv4/IFACE 정보 파싱 (호환성 보장)
   read -r ADDR PFX GW MTU DNS1 DNS2 < <(parse_bearer_ipv4 "$FINAL_BEARER_PATH")
   IFACE="${LTE_IF}"
 
@@ -89,25 +88,25 @@ for i in $(seq 1 ${MAX_RETRIES}); do
     sleep 3; continue
   fi
 
-  # 4) 인터페이스 설정 (메인 네임스페이스)
+  # 5) 인터페이스 설정 (메인 네임스페이스)
   ip link set "${IFACE}" down 2>/dev/null || true
   ip addr flush dev "${IFACE}" 2>/dev/null || true
   ip addr add "${ADDR}/${PFX}" dev "${IFACE}"
   [ -n "${MTU:-}" ] && ip link set "${IFACE}" mtu "${MTU}"
   ip link set "${IFACE}" up
 
-  # 5) 라우팅 설정 (후순위 metric)
+  # 6) 라우팅 설정 (후순위 metric)
   log lte-reconnect "Adding standby default route via ${GW} with metric 100"
   ip route replace default via "${GW}" dev "${IFACE}" metric 100 onlink
 
-  # 6) DNS 라우팅 설정
+  # 7) DNS 라우팅 설정
   log lte-reconnect "Adding routes for DNS servers ${DNS1}, ${DNS2}"
   ip route add "${DNS1}/32" via "${GW}" >/dev/null 2>&1 || true
   [ -n "${DNS2:-}" ] && ip route add "${DNS2}/32" via "${GW}" >/dev/null 2>&1 || true
 
   log lte-reconnect "Applied LTE IPv4 settings in main namespace."
 
-  # 7) 연결 검증
+  # 8) 연결 검증
   if verify_connection "${IFACE}" "${GW}"; then
     log lte-reconnect "--- LTE connection successfully established. ---"
     exit 0 # 최종 성공
