@@ -2,14 +2,8 @@
 set -Eeuo pipefail
 
 # ---- 기본 설정 (환경변수로 덮어쓰기 가능) ----
-NS="${NS:-prio_ns}"
 LTE_IF="${LTE_IF:-wwan0}"
 APN="${APN:-iot.1nce.net}"
-VETH_MAIN="${VETH_MAIN:-veth-main}"
-VETH_NS="${VETH_NS:-veth-ns}"
-MAIN_IP_CIDR="${MAIN_IP_CIDR:-10.254.0.1/30}"
-NS_IP_CIDR="${NS_IP_CIDR:-10.254.0.2/30}"
-HOST_VETH_IP="${HOST_VETH_IP:-${MAIN_IP_CIDR%/*}}"
 CHECK_OUT_IFS=(${CHECK_OUT_IFS:-eth0 wlan0})
 
 CHECK_HOSTS=(${CHECK_HOSTS:-8.8.8.8 1.1.1.1})
@@ -23,8 +17,6 @@ die(){ log "err" "$1"; exit 1; }
 as_root(){ [ "${EUID:-$(id -u)}" -eq 0 ] || die "Run as root"; }
 
 exists_link(){ ip link show "$1" >/dev/null 2>&1; }
-ns_exists(){ ip netns list | grep -q "^${NS}\b"; }
-ns_link_exists(){ ip netns exec "${NS}" ip link show "$1" >/dev/null 2>&1; }
 
 # mmcli helpers
 get_modem_path(){ mmcli -L | awk '/ModemManager1\/Modem/ {print $1; exit}' || true; }
@@ -52,4 +44,3 @@ parse_bearer_ipv4(){
 
   echo "${a:-} ${p:-} ${g:-} ${m:-} ${d1:-} ${d2:-}"
 }
-
