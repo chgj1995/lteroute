@@ -114,11 +114,20 @@ for i in $(seq 1 ${MAX_RETRIES}); do
   ${IPBIN} link set "${IFACE}" up
   ${IPBIN} route replace "${GW}" dev "${IFACE}" scope link proto static || true
 
-  # /run/resolvconf 경로 활용(있으면)
-  mkdir -p /run/resolvconf/resolv.conf.d 2>/dev/null || true
-  echo "nameserver ${DNS1}" > /run/resolvconf/resolv.conf.d/lte || true
-  [ -n "${DNS2}" ] && echo "nameserver ${DNS2}" >> /run/resolvconf/resolv.conf.d/lte || true
-  resolvconf -u 2>/dev/null || true
+  # (중요) NetworkManager가 DNS 설정을 덮어쓰기 전에, mmcli로 받은 통신사 DNS 서버로의 경로를 먼저 확보합니다.
+  log "Ensuring routes to ISP DNS servers: ${DNS1} ${DNS2:-}"
+  ${IPBIN} route replace "${DNS1}/32" via "${GW}" dev "${IFACE}" proto static metric 50
+  if [ -n "${DNS2:-}" ]; then
+    ${IPBIN} route replace "${DNS2}/32" via "${GW}" dev "${IFACE}" proto static metric 50
+  fi
+
+  # NetworkManager(nmcli)를 통해 시스템 DNS를 통신사 DNS로 영구 설정합니다.
+  DNS_SERVERS="${DNS1}"
+  [ -n "${DNS2:-}" ] && DNS_SERVERS="${DNS1} ${DNS2}"
+  log "Applying ISP DNS via nmcli for profile '${IFACE}': ${DNS_SERVERS}"
+  nmcli connection modify "${IFACE}" ipv4.ignore-auto-dns yes
+  nmcli connection modify "${IFACE}" ipv4.dns "${DNS_SERVERS}"
+  nmcli connection up "${IFACE}" >/dev/null
 
   if verify_connection "${IFACE}" "${GW}"; then
     log "--- LTE connection verified. Proceed to allow-list routing ---"
@@ -188,7 +197,6 @@ while IFS= read -r line || [ -n "$line" ]; do
   line="$(echo "$line" | xargs || true)"
   [ -z "$line" ] && continue
   case "$line" in
-    dns\ *)    DNS_IPS+=("${line#dns }");;
     ip\ *)     IPS+=("${line#ip }");;
     domain\ *) DOMAINS+=("${line#domain }");;
     *)
@@ -203,13 +211,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   esac
 done <"$CONF"
 
-# 1) DNS 고정 IP 우선
-if [ "${#DNS_IPS[@]}" -gt 0 ]; then
-  log "DNS 우선 적용: ${DNS_IPS[*]}"
-  for d in "${DNS_IPS[@]}"; do add_dst "$d"; done
-fi
-
-# 2) 도메인 해석 → IP
+# 1) 도메인 해석 → IP
 if [ "${#DOMAINS[@]}" -gt 0 ]; then
   for dom in "${DOMAINS[@]}"; do
     mapfile -t A4 < <(resolve_domain_ipv4 "$dom" || true)
