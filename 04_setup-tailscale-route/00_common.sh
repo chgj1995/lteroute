@@ -71,7 +71,7 @@ detect_ts_cidr(){
     :; else log info "TS_IF ${TS_IF}가 100.64/10 외처럼 보임 → TS_CIDR=${TS_CIDR} 사용"; fi
 }
 
-APP_PORT="${APP_PORT:-3000}"
+APP_PORTS="${APP_PORTS:-"3000 22"}"
 
 # 실행 시 자동탐지
 detect_ns
@@ -89,7 +89,7 @@ detect_ts_cidr
   echo "NS_VETH_IP=${NS_VETH_IP}"
   echo "TS_IF=${TS_IF}"
   echo "TS_CIDR=${TS_CIDR}"
-  echo "APP_PORT=${APP_PORT}"
+  echo "APP_PORTS='${APP_PORTS}'"
 } > "${STATE_DIR}/detected_env"
 log info "autodetect saved: ${STATE_DIR}/detected_env"
 
