@@ -11,6 +11,10 @@ SLEEP_SEC="${SLEEP_SEC:-0.5}"        # 재시도 간격(초)
 UNIT="/etc/systemd/system/turn-on-lte.service"
 WANTS_DIR="/etc/systemd/system/multi-user.target.wants"
 
+if ! command -v gpioset >/dev/null 2>&1; then
+  sudo apt-get install -y gpiod
+fi
+
 # 0) 과거/찌꺼기 제거(있으면)
 sudo systemctl disable --now turn-on-lte.service >/dev/null 2>&1 || true
 sudo rm -f "${UNIT}"
