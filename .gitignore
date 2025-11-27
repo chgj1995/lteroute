@@ -1,0 +1,14 @@
+.gocache/
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.sum
+vendor/
+.DS_Store
+*.swp
+*.swo
