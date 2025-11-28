@@ -1,7 +1,6 @@
 //go:build linux
 // +build linux
 
-//
 package ltepower
 
 import (
@@ -39,6 +38,19 @@ func PowerOn(cfg Config) error {
 		return fmt.Errorf("failed to set GPIO: %w", err)
 	}
 	fmt.Printf("GPIO %s offset %d set to %d\n", cfg.GPIOChip, cfg.GPIOOffset, cfg.ValueOn)
+	return nil
+}
+
+// PowerOff sets the GPIO to 0 (best effort) to cut LTE power if needed.
+func PowerOff(cfg Config) error {
+	cfg.ValueOn = 0
+	if _, err := os.Stat("/dev/" + cfg.GPIOChip); err != nil {
+		return fmt.Errorf("gpio chip %s not available: %w", cfg.GPIOChip, err)
+	}
+	if err := setGPIO(cfg); err != nil {
+		return fmt.Errorf("failed to clear GPIO: %w", err)
+	}
+	fmt.Printf("GPIO %s offset %d set to 0\n", cfg.GPIOChip, cfg.GPIOOffset)
 	return nil
 }
 

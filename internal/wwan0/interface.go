@@ -1,7 +1,6 @@
 //go:build linux
 // +build linux
 
-//
 package wwan0
 
 import (

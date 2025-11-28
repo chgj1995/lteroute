@@ -1,13 +1,10 @@
 //go:build linux
 // +build linux
 
-//
 package wwan0
 
 import (
-	"fmt"
 	"net"
-	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -23,13 +20,20 @@ type bearerDetails struct {
 
 func readBearer(path string) (bearerDetails, error) {
 	var b bearerDetails
-	out, err := exec.Command("mmcli", "-b", path).CombinedOutput()
+	out, err := mmcliOutput("-b", path)
 	if err != nil {
-		return b, fmt.Errorf("mmcli -b %s: %w (%s)", path, err, strings.TrimSpace(string(out)))
+		return b, err
 	}
 	lines := strings.Split(string(out), "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
+		// mmcli output sometimes prefixes fields like "IPv4 configuration | address:"
+		if strings.Contains(line, "|") {
+			parts := strings.SplitN(line, "|", 2)
+			if len(parts) == 2 {
+				line = strings.TrimSpace(parts[1])
+			}
+		}
 		lower := strings.ToLower(line)
 		switch {
 		case strings.HasPrefix(lower, "interface:"):
@@ -38,15 +42,17 @@ func readBearer(path string) (bearerDetails, error) {
 			// skip header
 		case strings.HasPrefix(lower, "address:"):
 			ipStr := strings.TrimSpace(strings.TrimPrefix(line, "address:"))
-			// prefix parsed later
-			b.Addrs = append(b.Addrs, net.IPNet{IP: net.ParseIP(ipStr)})
+			if ip := net.ParseIP(ipStr); ip != nil {
+				b.Addrs = append(b.Addrs, net.IPNet{IP: ip})
+			}
 		case strings.HasPrefix(lower, "prefix:"):
 			pfxStr := strings.TrimSpace(strings.TrimPrefix(line, "prefix:"))
 			if len(b.Addrs) > 0 {
 				if ip := b.Addrs[len(b.Addrs)-1].IP; ip != nil {
-					_, pfx, _ := net.ParseCIDR(fmt.Sprintf("%s/%s", ip.String(), pfxStr))
-					if pfx != nil {
-						b.Addrs[len(b.Addrs)-1] = *pfx
+					if bits, err := strconv.Atoi(pfxStr); err == nil {
+						if mask := net.CIDRMask(bits, 8*len(ip)); mask != nil {
+							b.Addrs[len(b.Addrs)-1] = net.IPNet{IP: ip, Mask: mask}
+						}
 					}
 				}
 			}
