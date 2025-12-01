@@ -1,7 +1,6 @@
 //go:build linux
 // +build linux
 
-//
 package prio
 
 // Config holds parameters for the prio namespace and veth pairs.
@@ -26,10 +25,10 @@ func DefaultConfig() Config {
 		VethMainNS:   "veth-main-ns",
 		VethLTEHost:  "veth-lte-host",
 		VethLTENS:    "veth-lte-ns",
-		MainCIDR:     "10.254.0.1/30",
-		NSCIDR:       "10.254.0.2/30",
-		LTEHostCIDR:  "10.254.1.1/30",
-		LTENCIDR:     "10.254.1.2/30",
+		MainCIDR:     "10.253.0.1/30",
+		NSCIDR:       "10.253.0.2/30",
+		LTEHostCIDR:  "10.253.1.1/30",
+		LTENCIDR:     "10.253.1.2/30",
 		DefaultRoute: 10,
 	}
 }

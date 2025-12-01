@@ -35,9 +35,6 @@ func Install(cfg Config) error {
 	if err := ensureTailscalePackage(); err != nil {
 		return err
 	}
-	if err := ensureDefaultEnv(); err != nil {
-		return err
-	}
 	if err := writeOverride(cfg); err != nil {
 		return err
 	}
@@ -62,10 +59,11 @@ func ConfigureRouting(cfg Config) error {
 
 // Remove cleans persistent overrides and leaves package untouched.
 func Remove(cfg Config) error {
-	_ = run("sudo", "systemctl", "disable", "--now", "tailscaled")
+	// Remove override so tailscaled goes back to host netns config.
 	_ = run("sudo", "rm", "-f", "/etc/systemd/system/tailscaled.service.d/override.conf")
-	_ = run("sudo", "rm", "-f", "/etc/default/tailscaled")
 	_ = run("sudo", "systemctl", "daemon-reload")
+	// Restart tailscaled with default unit (best effort).
+	_ = run("sudo", "systemctl", "restart", "tailscaled")
 	return nil
 }
 
@@ -105,15 +103,6 @@ func ensureTailscalePackage() error {
 	return nil
 }
 
-func ensureDefaultEnv() error {
-	content := "# Environment for tailscaled (sourced by systemd unit)\n# PORT=41641\n# FLAGS=\n"
-	cmd := exec.Command("sudo", "tee", "/etc/default/tailscaled")
-	cmd.Stdin = strings.NewReader(content)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
 func writeOverride(cfg Config) error {
 	if err := run("sudo", "mkdir", "-p", "/etc/systemd/system/tailscaled.service.d"); err != nil {
 		return err
@@ -123,13 +112,12 @@ After=turn-on-lte.service prio-ns-autoswitch.service
 Requires=prio-ns-autoswitch.service
 
 [Service]
-EnvironmentFile=/etc/default/tailscaled
 ExecStartPre=/bin/bash -lc 'for i in {1..20}; do ip netns list | grep -q "^%s\\b" && exit 0; sleep 0.5; done; echo "%s not ready"; exit 1'
 ExecStart=
 ExecStart=/bin/ip netns exec %s /usr/sbin/tailscaled --state=%s --socket=%s %s %s
 ExecStopPost=
 ExecStopPost=/bin/ip netns exec %s /usr/sbin/tailscaled --cleanup
-`, cfg.Namespace, cfg.Namespace, cfg.Namespace, cfg.StatePath, cfg.SocketPath, portFlag(cfg.Port), cfg.Flags, cfg.Namespace)
+`, cfg.Namespace, cfg.Namespace, cfg.StatePath, cfg.SocketPath, portFlag(cfg.Port), cfg.Flags, cfg.Namespace)
 
 	cmd := exec.Command("sudo", "tee", "/etc/systemd/system/tailscaled.service.d/override.conf")
 	cmd.Stdin = strings.NewReader(override)

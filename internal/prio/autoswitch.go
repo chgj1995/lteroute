@@ -1,7 +1,7 @@
 //go:build linux
 // +build linux
 
-package autoswitch
+package prio
 
 import (
 	"context"
@@ -14,7 +14,8 @@ import (
 	"github.com/vishvananda/netns"
 )
 
-type Config struct {
+// AutoConfig controls the autoswitch loop inside the prio namespace.
+type AutoConfig struct {
 	Namespace        string
 	MainIF           string
 	MainGW           string
@@ -26,18 +27,18 @@ type Config struct {
 	RecoverThreshold int
 	Interval         time.Duration
 	CheckHost        string
-	CheckIF          string // 헬스체크를 태울 인터페이스 (메인 경로 강제)
+	CheckIF          string // netns 내에서 체크에 사용할 인터페이스 (메인 강제)
 	ConntrackCIDR    string
 	ConntrackCmd     string
 }
 
-func DefaultConfig() Config {
-	return Config{
+func DefaultAutoConfig() AutoConfig {
+	return AutoConfig{
 		Namespace:        "prio_ns",
 		MainIF:           "veth-main-ns",
-		MainGW:           "10.254.0.1",
+		MainGW:           "10.253.0.1",
 		LTEIF:            "veth-lte-ns",
-		LTEGW:            "10.254.1.1",
+		LTEGW:            "10.253.1.1",
 		MainMetricPref:   10,
 		LTEMetricPref:    100,
 		FailThreshold:    2,
@@ -45,12 +46,13 @@ func DefaultConfig() Config {
 		Interval:         3 * time.Second,
 		CheckHost:        "8.8.8.8",
 		CheckIF:          "veth-main-ns",
-		ConntrackCIDR:    "10.254.1.0/30",
+		ConntrackCIDR:    "10.253.1.0/30",
 		ConntrackCmd:     "conntrack",
 	}
 }
 
-func Run(ctx context.Context, cfg Config) error {
+// RunAutoswitch runs the main<->LTE default route switching loop within the prio namespace.
+func RunAutoswitch(ctx context.Context, cfg AutoConfig) error {
 	mode := "main"
 	failCnt := 0
 	recoverCnt := 0
@@ -66,31 +68,39 @@ func Run(ctx context.Context, cfg Config) error {
 			ok := checkConnectivity(cfg.Namespace, cfg.CheckHost, cfg.CheckIF)
 			if mode == "main" {
 				if ok {
+					fmt.Println("[autoswitch] main healthy")
 					failCnt = 0
 					continue
 				}
 				failCnt++
+				fmt.Printf("[autoswitch] main check failed (%d/%d)\n", failCnt, cfg.FailThreshold)
 				if failCnt >= cfg.FailThreshold {
 					if err := switchToLTE(cfg); err != nil {
-						return err
+						fmt.Printf("[autoswitch] switch to LTE failed: %v (will retry)\n", err)
+					} else {
+						fmt.Println("[autoswitch] switched to LTE (main standby)")
+						mode = "lte"
 					}
-					mode = "lte"
 					failCnt = 0
 					recoverCnt = 0
 				}
 			} else { // mode == lte
 				if ok {
 					recoverCnt++
+					fmt.Printf("[autoswitch] main recovery check ok (%d/%d)\n", recoverCnt, cfg.RecoverThreshold)
 					if recoverCnt >= cfg.RecoverThreshold {
 						if err := switchToMain(cfg); err != nil {
-							return err
+							fmt.Printf("[autoswitch] switch to main failed: %v (will retry)\n", err)
+						} else {
+							flushConntrack(cfg)
+							fmt.Println("[autoswitch] switched to main (LTE standby)")
+							mode = "main"
+							recoverCnt = 0
+							failCnt = 0
 						}
-						flushConntrack(cfg)
-						mode = "main"
-						recoverCnt = 0
-						failCnt = 0
 					}
 				} else {
+					fmt.Println("[autoswitch] main still down on recovery check")
 					recoverCnt = 0
 				}
 			}
@@ -98,8 +108,9 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 }
 
-func switchToLTE(cfg Config) error {
-	return inNamespace(cfg.Namespace, func() error {
+func switchToLTE(cfg AutoConfig) error {
+	fmt.Println("[autoswitch] lowering LTE metric, raising main metric")
+	return withNamespace(cfg.Namespace, func() error {
 		if err := setDefault(cfg.MainIF, cfg.MainGW, cfg.LTEMetricPref); err != nil {
 			return fmt.Errorf("set main metric high: %w", err)
 		}
@@ -110,8 +121,9 @@ func switchToLTE(cfg Config) error {
 	})
 }
 
-func switchToMain(cfg Config) error {
-	return inNamespace(cfg.Namespace, func() error {
+func switchToMain(cfg AutoConfig) error {
+	fmt.Println("[autoswitch] raising LTE metric, lowering main metric")
+	return withNamespace(cfg.Namespace, func() error {
 		if err := setDefault(cfg.MainIF, cfg.MainGW, cfg.MainMetricPref); err != nil {
 			return fmt.Errorf("set main metric low: %w", err)
 		}
@@ -145,14 +157,14 @@ func checkConnectivity(nsName, host, iface string) bool {
 	return cmd.Run() == nil
 }
 
-func flushConntrack(cfg Config) {
+func flushConntrack(cfg AutoConfig) {
 	if cfg.ConntrackCmd == "" {
 		return
 	}
 	_ = exec.Command(cfg.ConntrackCmd, "-D", "-s", cfg.ConntrackCIDR).Run()
 }
 
-func inNamespace(name string, fn func() error) error {
+func withNamespace(name string, fn func() error) error {
 	target, err := netns.GetFromName(name)
 	if err != nil {
 		return err
