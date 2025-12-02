@@ -3,5 +3,20 @@
 
 package prio
 
-// 테스트용 보조 함수들은 main 흐름을 한 단계씩 검증하기 위한 것이며,
-// 테스트를 위해 리소스를 추가로 삭제/재생성하지 않는다.
+import (
+	"fmt"
+	"os/exec"
+	"strings"
+)
+
+// PingFromNamespace runs a connectivity check from the given namespace/interface.
+// It does not create or delete any resources; it only issues a ping.
+func PingFromNamespace(ns, iface, dst string) error {
+	args := []string{"netns", "exec", ns, "ping", "-I", iface, "-c", "3", dst}
+	cmd := exec.Command("ip", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ping %s via %s in %s: %w (%s)", dst, iface, ns, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}

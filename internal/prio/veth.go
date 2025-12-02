@@ -37,9 +37,6 @@ func Setup(cfg Config) error {
 	if err := setupMainInterfaces(cfg, nsHandle); err != nil {
 		return err
 	}
-	if err := setupLTEVeth(cfg, nsHandle); err != nil {
-		return err
-	}
 	if err := setupRoutes(cfg, nsHandle); err != nil {
 		return err
 	}
@@ -57,9 +54,6 @@ func SetupVethsOnly(cfg Config) error {
 	if err := setupMainInterfaces(cfg, nsHandle); err != nil {
 		return err
 	}
-	if err := setupLTEVeth(cfg, nsHandle); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -75,19 +69,6 @@ func setupMainInterfaces(cfg Config, nsHandle netns.NsHandle) error {
 		NamespaceLabel: cfg.Namespace,
 	}, nsHandle); err != nil {
 		return fmt.Errorf("main veth: %w", err)
-	}
-	return nil
-}
-
-func setupLTEVeth(cfg Config, nsHandle netns.NsHandle) error {
-	if _, err := setupVethPair(vethSpec{
-		HostName:     cfg.VethLTEHost,
-		NsName:       cfg.VethLTENS,
-		HostCIDR:     cfg.LTEHostCIDR,
-		NsCIDR:       cfg.LTENCIDR,
-		MovePeerToNS: true,
-	}, nsHandle); err != nil {
-		return fmt.Errorf("ensure LTE veth pair: %w", err)
 	}
 	return nil
 }
@@ -126,14 +107,14 @@ func EnsureVethsUp(cfg Config) error {
 	}
 	defer nsHandle.Close()
 
-	for _, name := range []string{cfg.VethMainHost, cfg.VethLTEHost} {
+	for _, name := range []string{cfg.VethMainHost} {
 		if err := ensureLinkUp(name); err != nil {
 			return err
 		}
 	}
 
 	if err := inNamespace(nsHandle, func() error {
-		for _, name := range []string{cfg.VethMainNS, cfg.VethLTENS} {
+		for _, name := range []string{cfg.VethMainNS} {
 			if err := ensureLinkUp(name); err != nil {
 				return err
 			}

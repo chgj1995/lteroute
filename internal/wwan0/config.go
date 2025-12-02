@@ -23,6 +23,8 @@ type Config struct {
 	IPType string
 	// Interface name to configure (default: wwan0).
 	Interface string
+	// Namespace where mmcli/ModemManager should run (e.g., prio_ns).
+	Namespace string
 	// Modem detection wait parameters.
 	ModemWaitRetries  int
 	ModemWaitInterval time.Duration
@@ -37,6 +39,7 @@ func DefaultConfig() Config {
 		APN:                 "iot.1nce.net",
 		IPType:              "ipv4",
 		Interface:           "wwan0",
+		Namespace:           "prio_ns",
 		ModemWaitRetries:    40,
 		ModemWaitInterval:   1 * time.Second,
 		ConnectWaitRetries:  30,

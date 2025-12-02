@@ -12,9 +12,9 @@ import (
 	"github.com/vishvananda/netlink"
 
 	"lteroute/internal/ltepower"
-	"lteroute/internal/natfw"
 	"lteroute/internal/ntpns"
 	"lteroute/internal/prio"
+	"lteroute/internal/route"
 	"lteroute/internal/tailscale"
 	"lteroute/internal/wwan0"
 )
@@ -43,24 +43,40 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println("[main] configuring wwan0 via mmcli...")
-	if _, err := wwan0.ConnectAndConfigure(wwan0.DefaultConfig()); err != nil {
+	// Ensure prio namespace exists before configuring wwan0 so mmcli/ModemManager
+	// drop-in can see it and the interface can be moved into it.
+	prioCfg := prio.DefaultConfig()
+	if nsHandle, err := prio.EnsureNamespace(prioCfg.Namespace); err != nil {
+		fmt.Fprintf(os.Stderr, "prio namespace setup failed: %v\n", err)
+		os.Exit(1)
+	} else {
+		nsHandle.Close()
+	}
+
+	fmt.Println("[main] configuring wwan0 via mmcli inside namespace...")
+	lteInfo, err := wwan0.ConnectAndConfigure(wwan0.DefaultConfig())
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "wwan0 configure failed: %v\n", err)
 		os.Exit(1)
 	}
 
 	fmt.Println("[main] setting up prio namespace and veth...")
-	if err := prio.Setup(prio.DefaultConfig()); err != nil {
+	if err := prio.Setup(prioCfg); err != nil {
 		fmt.Fprintf(os.Stderr, "prio setup failed: %v\n", err)
 		os.Exit(1)
 	}
 
 	fmt.Println("[main] applying NAT/forwarding rules...")
-	_ = natfw.Setup(natfw.DefaultConfig())
+	_ = route.SetupHost(route.DefaultHostConfig())
 
 	fmt.Println("[main] starting autoswitch loop...")
 	ctx := context.Background()
-	if err := prio.RunAutoswitch(ctx, prio.DefaultAutoConfig()); err != nil {
+	autoCfg := prio.DefaultAutoConfig()
+	autoCfg.LTEIF = lteInfo.Interface
+	if lteInfo.Gateway != nil {
+		autoCfg.LTEGW = lteInfo.Gateway.String()
+	}
+	if err := prio.RunAutoswitch(ctx, autoCfg); err != nil {
 		fmt.Fprintf(os.Stderr, "autoswitch failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -93,7 +109,7 @@ func removePersistent() error {
 		return fmt.Errorf("ntp remove: %w", err)
 	}
 	fmt.Println("[remove] removing NAT/forwarding rules...")
-	natfw.Cleanup(natfw.DefaultConfig())
+	route.CleanupHost(route.DefaultHostConfig())
 	fmt.Println("[remove] cleaning prio namespace/veth...")
 	if err := prio.Remove(prio.DefaultConfig()); err != nil {
 		return fmt.Errorf("prio cleanup: %w", err)
@@ -131,7 +147,14 @@ func runRemove(args []string) error {
 		}
 		if a == "--route" {
 			cfg := prio.DefaultConfig()
-			if err := prio.RemoveRouting(cfg, 100); err != nil {
+			dr := route.DefaultRoute{
+				Namespace: cfg.Namespace,
+				Interface: cfg.VethLTENS,
+				Gateway:   cfg.LTEHostCIDR,
+				Metric:    100,
+				OnLink:    true,
+			}
+			if err := route.DeleteDefaultRoute(dr); err != nil {
 				return fmt.Errorf("route cleanup: %w", err)
 			}
 			fmt.Println("[remove] prio routing cleanup done")
@@ -172,32 +195,53 @@ func runTest(args []string) error {
 			if err := prio.SetupVethsOnly(cfg); err != nil {
 				return fmt.Errorf("setup veths: %w", err)
 			}
-			fmt.Printf("[test] prio veths created: %s (main), %s (lte)\n", cfg.VethMainHost, cfg.VethLTEHost)
+			fmt.Printf("[test] prio veth created: %s (main)\n", cfg.VethMainHost)
 			return nil
 		}
 		if a == "--route" {
 			cfg := prio.DefaultConfig()
-			// Assume veths/ns already prepared (e.g., via --prio/--veth). Just configure routing.
+			// Non-destructive: ensure links up and default route via main veth.
 			if err := prio.EnsureVethsUp(cfg); err != nil {
 				return fmt.Errorf("prio veth check: %w", err)
 			}
-			// Bring up wwan0 and configure.
-			info, usedExisting, err := wwanInfoOrConfigure()
+			dr := route.DefaultRoute{
+				Namespace: cfg.Namespace,
+				Interface: cfg.VethMainNS,
+				Gateway:   cfg.MainCIDR,
+				Metric:    cfg.DefaultRoute,
+			}
+			if err := route.EnsureDefaultRoute(dr); err != nil {
+				return fmt.Errorf("prio ns default via main: %w", err)
+			}
+			if err := route.SetupHost(route.DefaultHostConfig()); err != nil {
+				return fmt.Errorf("nat/fw setup: %w", err)
+			}
+			fmt.Printf("[test] prio namespace route via %s ensured; host forwarding/NAT refreshed\n", cfg.VethMainNS)
+
+			// Connectivity check: prio_ns -> main veth -> host eth (ping external).
+			if err := prio.PingFromNamespace(cfg.Namespace, cfg.VethMainNS, "8.8.8.8"); err != nil {
+				return fmt.Errorf("prio_ns ping via %s failed: %w", cfg.VethMainNS, err)
+			}
+			fmt.Println("[test] prio_ns connectivity via main veth verified (ping 8.8.8.8)")
+			return nil
+		}
+		if a == "--mmcli" {
+			cfg := wwan0.DefaultConfig()
+			nsHandle, err := prio.EnsureNamespace(cfg.Namespace)
 			if err != nil {
-				return fmt.Errorf("wwan0 configure: %w", err)
+				return fmt.Errorf("ensure namespace %s: %w", cfg.Namespace, err)
 			}
-			if usedExisting {
-				fmt.Printf("[test] using existing wwan0 config addr=%v gw=%v\n", info.Addrs, info.Gateway)
+			nsHandle.Close()
+			fmt.Printf("[test] ensured netns %s for mmcli/ModemManager\n", cfg.Namespace)
+			if err := wwan0.InstallModemManagerOverride(cfg.Namespace); err != nil {
+				return fmt.Errorf("install mmcli override: %w", err)
 			}
-			if err := prio.SetupNSDefaultViaLTE(cfg, 100); err != nil {
-				return fmt.Errorf("prio ns default via lte: %w", err)
-			}
-			fmt.Printf("[test] prio namespace default via %s; main stays preferred\n", cfg.VethLTENS)
+			fmt.Printf("[test] ModemManager override installed for netns %s (DBus socket bind-mounted)\n", cfg.Namespace)
 			return nil
 		}
 	}
 
-	return fmt.Errorf("unknown test target; use --wwan0, --ltepower, --prio, or --route")
+	return fmt.Errorf("unknown test target; use --wwan0, --ltepower, --prio, --route, or --mmcli")
 }
 
 func argsFrom(i int) []string {

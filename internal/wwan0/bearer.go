@@ -18,9 +18,9 @@ type bearerDetails struct {
 	DNS       []net.IP
 }
 
-func readBearer(path string) (bearerDetails, error) {
+func readBearer(cli mmcliClient, path string) (bearerDetails, error) {
 	var b bearerDetails
-	out, err := mmcliOutput("-b", path)
+	out, err := cli.output("-b", path)
 	if err != nil {
 		return b, err
 	}

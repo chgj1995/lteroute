@@ -21,20 +21,35 @@ func RunWWAN0Integration() error {
 	}
 
 	fmt.Printf("[wwan0 test] SUCCESS iface=%s addrs=%v gw=%v mtu=%d dns=%v\n", info.Interface, info.Addrs, info.Gateway, info.MTU, info.DNS)
-	if err := pingConnectivity(info); err != nil {
+	if err := pingConnectivity(info, cfg.Namespace); err != nil {
 		return err
 	}
 	fmt.Println("[wwan0 test] connectivity check (ping 8.8.8.8) succeeded")
 	return nil
 }
 
-func pingConnectivity(info Info) error {
+func pingConnectivity(info Info, namespace string) error {
 	dst := "8.8.8.8"
-	fmt.Printf("[wwan0 test] pinging %s via %s\n", dst, info.Interface)
-	_ = exec.Command("ip", "route", "add", dst+"/32", "via", info.Gateway.String(), "dev", info.Interface).Run()
-	defer exec.Command("ip", "route", "del", dst+"/32", "via", info.Gateway.String(), "dev", info.Interface).Run()
+	ipCmd := func(args ...string) *exec.Cmd {
+		if namespace != "" {
+			all := append([]string{"netns", "exec", namespace}, args...)
+			return exec.Command("ip", all...)
+		}
+		return exec.Command("ip", args...)
+	}
+	pingCmd := func(args ...string) *exec.Cmd {
+		if namespace != "" {
+			all := append([]string{"netns", "exec", namespace, "ping"}, args...)
+			return exec.Command("ip", all...)
+		}
+		return exec.Command("ping", args...)
+	}
 
-	cmd := exec.Command("ping", "-I", info.Interface, "-c", "3", dst)
+	fmt.Printf("[wwan0 test] pinging %s via %s (ns=%s)\n", dst, info.Interface, namespace)
+	_ = ipCmd("route", "add", dst+"/32", "via", info.Gateway.String(), "dev", info.Interface).Run()
+	defer ipCmd("route", "del", dst+"/32", "via", info.Gateway.String(), "dev", info.Interface).Run()
+
+	cmd := pingCmd("-I", info.Interface, "-c", "3", dst)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ping %s via %s failed: %w (%s)", dst, info.Interface, err, string(out))

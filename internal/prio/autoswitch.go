@@ -37,8 +37,8 @@ func DefaultAutoConfig() AutoConfig {
 		Namespace:        "prio_ns",
 		MainIF:           "veth-main-ns",
 		MainGW:           "10.253.0.1",
-		LTEIF:            "veth-lte-ns",
-		LTEGW:            "10.253.1.1",
+		LTEIF:            "wwan0",
+		LTEGW:            "",
 		MainMetricPref:   10,
 		LTEMetricPref:    100,
 		FailThreshold:    2,
@@ -114,8 +114,10 @@ func switchToLTE(cfg AutoConfig) error {
 		if err := setDefault(cfg.MainIF, cfg.MainGW, cfg.LTEMetricPref); err != nil {
 			return fmt.Errorf("set main metric high: %w", err)
 		}
-		if err := setDefault(cfg.LTEIF, cfg.LTEGW, cfg.MainMetricPref); err != nil {
-			return fmt.Errorf("set lte metric low: %w", err)
+		if cfg.LTEGW != "" {
+			if err := setDefault(cfg.LTEIF, cfg.LTEGW, cfg.MainMetricPref); err != nil {
+				return fmt.Errorf("set lte metric low: %w", err)
+			}
 		}
 		return nil
 	})
@@ -127,8 +129,10 @@ func switchToMain(cfg AutoConfig) error {
 		if err := setDefault(cfg.MainIF, cfg.MainGW, cfg.MainMetricPref); err != nil {
 			return fmt.Errorf("set main metric low: %w", err)
 		}
-		if err := setDefault(cfg.LTEIF, cfg.LTEGW, cfg.LTEMetricPref); err != nil {
-			return fmt.Errorf("set lte metric high: %w", err)
+		if cfg.LTEGW != "" {
+			if err := setDefault(cfg.LTEIF, cfg.LTEGW, cfg.LTEMetricPref); err != nil {
+				return fmt.Errorf("set lte metric high: %w", err)
+			}
 		}
 		return nil
 	})
